@@ -1,11 +1,13 @@
 import express from "express";
 import dotenv from "dotenv";
 import { triadChat } from "./src/triad/triad-openai.js";
+import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
 
 dotenv.config();
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
+app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
 const PORT = process.env.PORT || 3000;
 

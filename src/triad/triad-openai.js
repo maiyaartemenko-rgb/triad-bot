@@ -62,8 +62,7 @@ if (missing.length) {
     mode: rel ? "compatibility" : "core",
     missing_signs: missing,
     answer:
-      `Не нашла методичку для знаков: ${missing.join(", ")}. ` +
-      `Проверь triad_signs.json (ключи должны совпадать: ДРАКОН, СКОРПИОН и т.д.).`
+      `Не нашла методичку для знаков: ${missing.join(", ")}. Проверь triad_signs.json (ключи должны совпадать: ДРАКОН, СКОРПИОН и т.д.).`
   };
 }
 
