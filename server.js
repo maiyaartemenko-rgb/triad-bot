@@ -52,6 +52,17 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// ВАЖНО: чтобы Express понимал JSON
+app.use(express.json({ limit: "2mb" }));
+
+app.post("/sendpulse/webhook", async (req, res) => {
+  console.log("SENDPULSE WEBHOOK HEADERS:", req.headers);
+  console.log("SENDPULSE WEBHOOK BODY:", JSON.stringify(req.body, null, 2));
+
+  // пока просто отвечаем 200, чтобы SendPulse не ругался
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log("Server listening on " + PORT);
 });
