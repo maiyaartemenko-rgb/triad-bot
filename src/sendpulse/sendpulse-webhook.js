@@ -2,6 +2,13 @@
 import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 
+function escapeHtml(s = "") {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
   return Array.isArray(payload) ? (payload[0] || {}) : (payload || {});
@@ -80,9 +87,11 @@ export async function handleSendpulseWebhook(req, res) {
 
     const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
+const safe = escapeHtml(answer).replaceAll("\n", "<br>");
+
     await sendpulseTelegramSendText({
       contactId,
-      text: answer
+      text: safe
     });
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
