@@ -46,10 +46,6 @@ export async function sendpulseTelegramSendText({ contactId, text }) {
     },
    body: JSON.stringify({
   contact_id: String(contactId),
-
-  // ВАЖНО: parse_mode продублирован
-  parse_mode: "HTML",
-
   message: {
     type: "text",
     text: text,

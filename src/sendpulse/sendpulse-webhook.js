@@ -86,9 +86,7 @@ export async function handleSendpulseWebhook(req, res) {
 }
 
 const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
-
-// если модель прислала &lt;b&gt; — превратим обратно в <b>
-const html = decodeHtmlEntities(answer).replaceAll("\n", "<br>");
+const html = decodeHtmlEntities(answer);
 
 await sendpulseTelegramSendText({
   contactId,
