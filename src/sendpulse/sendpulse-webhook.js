@@ -2,13 +2,6 @@
 import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 
-function escapeHtml(s = "") {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
   return Array.isArray(payload) ? (payload[0] || {}) : (payload || {});
@@ -85,14 +78,22 @@ export async function handleSendpulseWebhook(req, res) {
       temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
     });
 
-    const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
+    function decodeHtmlEntities(s = "") {
+  return String(s)
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
+}
 
-const safe = escapeHtml(answer).replaceAll("\n", "<br>");
+const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
-    await sendpulseTelegramSendText({
-      contactId,
-      text: safe
-    });
+// если модель прислала &lt;b&gt; — превратим обратно в <b>
+const html = decodeHtmlEntities(answer).replaceAll("\n", "<br>");
+
+await sendpulseTelegramSendText({
+  contactId,
+  text: html
+});
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
