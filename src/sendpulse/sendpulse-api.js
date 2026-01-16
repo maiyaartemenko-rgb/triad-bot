@@ -38,7 +38,7 @@ async function getAccessToken() {
 export async function sendpulseTelegramSendText({ contactId, text }) {
   const token = await getAccessToken();
 
-const text = "<b>Жирный</b>\n<i>Курсив</i>\n<u>Подчерк</u>\n<code>код</code>";
+text = "<b>Жирный</b>\n<i>Курсив</i>\n<u>Подчерк</u>\n<code>код</code>";
 
   const resp = await fetch("https://api.sendpulse.com/telegram/contacts/send", {
     method: "POST",
@@ -54,7 +54,7 @@ const text = "<b>Жирный</b>\n<i>Курсив</i>\n<u>Подчерк</u>\n<
 
   message: {
     type: "text",
-    text: testText,
+    text: text,
     parse_mode: "HTML"
   }
 })
