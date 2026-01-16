@@ -44,10 +44,18 @@ export async function sendpulseTelegramSendText({ contactId, text }) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`
     },
-    body: JSON.stringify({
-      contact_id: String(contactId),
-      message: { type: "text", text, parse_mode: "HTML" }
-    })
+   body: JSON.stringify({
+  contact_id: String(contactId),
+
+  // ВАЖНО: parse_mode продублирован
+  parse_mode: "HTML",
+
+  message: {
+    type: "text",
+    text: text,
+    parse_mode: "HTML"
+  }
+})
   });
 
   const data = await resp.json().catch(() => ({}));
