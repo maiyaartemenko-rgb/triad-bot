@@ -34,6 +34,52 @@ function normalizeMainSignFromVars(vars) {
     .toUpperCase();
 }
 
+function toSignString(x) {
+  if (!x) return null;
+
+  // уже строка
+  if (typeof x === "string") return x;
+
+  // массив: берём первое осмысленное
+  if (Array.isArray(x)) {
+    for (const item of x) {
+      const v = toSignString(item);
+      if (v) return v;
+    }
+    return null;
+  }
+
+  // объект: пробуем разные поля
+  if (typeof x === "object") {
+    return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
+  }
+
+  return null;
+}
+
+function normalizeSignWord(s) {
+  if (!s) return null;
+
+  // убираем эмодзи/мусор, оставляем буквы/пробел/дефис
+  const cleaned = String(s)
+    .replace(/[^\p{L}\s-]/gu, "")
+    .trim()
+    .toUpperCase();
+
+  // выцепим именно название знака (если фраза типа "МОЙ МУЖ ДРАКОН")
+  // ищем любое слово-знак из методички:
+  const known = [
+    "ДРАКОН","СКОРПИОН","ФЕНИКС","ВОЛК","ПОПУГАЙ","БАРСУК","ТЮЛЕНЬ","ОСЬМИНОГ",
+    "БОБЕР" // и т.д. (можешь дописать остальные)
+  ];
+  for (const k of known) {
+    if (cleaned.includes(k)) return k;
+  }
+
+  // если не нашли — вернём как есть (иногда там уже "ДРАКОН")
+  return cleaned || null;
+}
+
 export async function handleSendpulseWebhook(req, res) {
   // 1) всегда быстро отвечаем OK
   res.status(200).json({ ok: true });
@@ -92,7 +138,7 @@ const profile = {
   active_signs
 };
 
-const partnerSign = parsePartnerFromTextV4(text);
+const partnerSign = normalizeSignWord(toSignString(partnerParsed));
 
 function normalizePartnerSign(parsed) {
   if (!parsed) return null;
