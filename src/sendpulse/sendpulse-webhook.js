@@ -94,6 +94,32 @@ const profile = {
 
 const partnerSign = parsePartnerFromTextV4(text);
 
+function normalizePartnerSign(parsed) {
+  if (!parsed) return null;
+
+  // если парсер уже вернул строку
+  if (typeof parsed === "string") return parsed.trim().toUpperCase();
+
+  // если вернул массив кандидатов
+  if (Array.isArray(parsed)) {
+    const first = parsed[0];
+    if (!first) return null;
+    if (typeof first === "string") return first.trim().toUpperCase();
+    if (typeof first === "object") {
+      const v = first.sign  first.partnerSign  first.value || null;
+      return v ? String(v).trim().toUpperCase() : null;
+    }
+  }
+
+  // если вернул объект
+  if (typeof parsed === "object") {
+    const v = parsed.sign  parsed.partnerSign  parsed.value || null;
+    return v ? String(v).trim().toUpperCase() : null;
+  }
+
+  return null;
+}
+
 const result = await triadChat({
   userText: text,
   profile,
