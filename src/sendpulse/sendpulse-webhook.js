@@ -91,13 +91,15 @@ const profile = {
   active_signs
 };
 
-    const result = await triadChat({
-      userText: text,
-      profile,
-      partnerSign: null,
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
-    });
+  const partnerSign = extractPartnerSign(text);
+
+const result = await triadChat({
+  userText: text,
+  profile,
+  partnerSign,
+  model: process.env.OPENAI_MODEL || "gpt-5.2",
+  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
+});
 
     function decodeHtmlEntities(s = "") {
   return String(s)
