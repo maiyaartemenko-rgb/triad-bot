@@ -261,8 +261,7 @@ export function parsePartnerFromTextV4(text, {
     debug.details = iy.debug;
 
     return {
-      partnerSign: iy.confidence >= mainThreshold ? iy.partn
-erSign : null,
+      partnerSign: iy.confidence >= mainThreshold ? iy.partnerSign : null,
       partnerSignsMentioned: [],
       selfSignMentioned: iy.selfSignMentioned,
       confidence: iy.confidence,
@@ -350,24 +349,3 @@ erSign : null,
 
   return { partnerSign: null, partnerSignsMentioned: [], selfSignMentioned: null, confidence: 0, debug: { mode: "none" } };
 }
-
-Как использовать в боте
-
-import { parsePartnerFromTextV4 } from "./parsePartnerFromText.v4.js";
-
-const parsed = parsePartnerFromTextV4(userText, { mainThreshold: 0.9 });
-
-const partnerSign = parsed.partnerSign; // null если не уверены
-// selfSignMentioned можно игнорировать, но иногда полезно для UX
-
-const result = await triadChat({ userText, profile: userProfile, partnerSign, kb });
-
-Примеры, где v4 реально спасает
-
-«Я дракон, он скорпион, как не ругаться?» → partnerSign = СКОРПИОН (режим i_you_pattern)
-
-«Я попугай. Муж — волк.» → partnerSign = ВОЛК (окно после "муж")
-
-«Она scorpion» → partnerSign = СКОРПИОН (латиница)
-
-«он скарпион» → partnerSign = СКОРПИОН (опечатка → fuzzy)
