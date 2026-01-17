@@ -106,14 +106,14 @@ function normalizePartnerSign(parsed) {
     if (!first) return null;
     if (typeof first === "string") return first.trim().toUpperCase();
     if (typeof first === "object") {
-      const v = first.sign  first.partnerSign  first.value || null;
+      const v = first.sign || first.partnerSign || first.value || null;
       return v ? String(v).trim().toUpperCase() : null;
     }
   }
 
   // если вернул объект
   if (typeof parsed === "object") {
-    const v = parsed.sign  parsed.partnerSign  parsed.value || null;
+    const v = parsed.sign || parsed.partnerSign || parsed.value || null;
     return v ? String(v).trim().toUpperCase() : null;
   }
 
