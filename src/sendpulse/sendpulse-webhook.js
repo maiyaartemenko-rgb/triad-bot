@@ -1,6 +1,7 @@
 // src/sendpulse/sendpulse-webhook.js
 import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
+import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
@@ -91,7 +92,7 @@ const profile = {
   active_signs
 };
 
-  const partnerSign = extractPartnerSign(text);
+const partnerSign = parsePartnerFromTextV4(text);
 
 const result = await triadChat({
   userText: text,
