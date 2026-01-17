@@ -61,14 +61,35 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    const vars = event?.contact?.variables || {};
-    const main_sign = normalizeMainSignFromVars(vars) || null;
+   const vars = event?.contact?.variables || {};
+const main_sign = normalizeMainSignFromVars(vars) || null;
 
-    // минимальный профиль для теста
-    const profile = {
-      main_sign: main_sign || "БАРСУК",
-      active_signs: []
-    };
+function parseActiveSigns(vars) {
+  const raw = vars?.active_signs || "";
+  if (!raw) return [];
+
+  try {
+    const arr = JSON.parse(String(raw));
+    if (!Array.isArray(arr)) return [];
+
+    return arr
+      .map(x => ({
+        sign: String(x?.sign || "").trim().toUpperCase(),
+        pct: Number(x?.pct ?? 0)
+      }))
+      .filter(x => x.sign && Number.isFinite(x.pct));
+  } catch (err) {
+    console.error("Bad active_signs JSON:", err, raw);
+    return [];
+  }
+}
+
+const active_signs = parseActiveSigns(vars);
+
+const profile = {
+  main_sign: main_sign || "БАРСУК",
+  active_signs
+};
 
     const result = await triadChat({
       userText: text,
