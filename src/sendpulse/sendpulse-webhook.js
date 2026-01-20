@@ -159,17 +159,23 @@ const profile = {
   active_signs
 };
 
-// ✅ ПАРСЕР ПАРТНЁРА
-const partnerParsed = parsePartnerFromTextV4(text);
-const partnerSign = normalizeSignWord(toSignString(partnerParsed)) || null;
+const parsed = parsePartnerFromTextV4(text);
 
-// ✅ ВЫЗОВ МОДЕЛИ
+// partnerSign = строка типа "ДРАКОН" или null
+const partnerSign = parsed?.partnerSign ? String(parsed.partnerSign).trim().toUpperCase() : null;
+
+// если нашли знак партнёра — форсим режим "про отношения"
+let userText = text;
+if (partnerSign) {
+  userText = `${text}\n\n(контекст: отношения/пара)`;
+}
+
 const result = await triadChat({
-  userText: text,
+  userText,
   profile,
-  partnerSign,
+  partnerSign, // ТУТ ДОЛЖНА БЫТЬ СТРОКА типа "ДРАКОН"
   model: process.env.OPENAI_MODEL || "gpt-5.2",
-  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
+  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
 });
 
 const answer = result?.answer?.trim() || "Я рядом. Скажи, что именно в отношениях с мужем сейчас самое болезненное?";
