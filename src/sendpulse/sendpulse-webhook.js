@@ -35,29 +35,25 @@ function parseActiveSigns(vars) {
   // [{"sign":"БАРСУК","pct":4}, ...]
   const raw = vars?.active_signs || "";
   if (!raw) return [];
-
   try {
     const arr = JSON.parse(String(raw));
     if (!Array.isArray(arr)) return [];
-
     return arr
-      .map(x => ({
+      .map((x) => ({
         sign: String(x?.sign || "").trim().toUpperCase(),
-        pct: Number(x?.pct ?? 0)
+        pct: Number(x?.pct ?? 0),
       }))
-      .filter(x => x.sign && Number.isFinite(x.pct));
+      .filter((x) => x.sign && Number.isFinite(x.pct));
   } catch (err) {
     console.error("Bad active_signs JSON:", err);
     return [];
   }
 }
 
-// Универсально вытаскиваем "значение знака" из того, что вернул парсер
+// если где-то понадобится
 function toSignString(x) {
   if (!x) return null;
-
   if (typeof x === "string") return x;
-
   if (Array.isArray(x)) {
     for (const item of x) {
       const v = toSignString(item);
@@ -65,35 +61,9 @@ function toSignString(x) {
     }
     return null;
   }
-
   if (typeof x === "object") {
-    // ВАЖНО: тут должны быть ||
     return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
   }
-
-  return null;
-}
-
-// На всякий случай приводим к точному названию знака (если вдруг пришла фраза)
-function normalizeSignWord(s) {
-  if (!s) return null;
-
-  const cleaned = String(s)
-    .replace(/[^\p{L}\s-]/gu, "")
-    .trim()
-    .toUpperCase();
-
-  const known = [
-    "ДРАКОН","СКОРПИОН","ФЕНИКС","ВОЛК","ПОПУГАЙ",
-    "БАРСУК","ТЮЛЕНЬ","ОСЬМИНОГ","БОБЕР"
-    // + остальные знаки
-  ];
-
-  for (const k of known) {
-    if (cleaned.includes(k)) return k;
-  }
-
-  // ❗ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
   return null;
 }
 
@@ -110,8 +80,6 @@ export async function handleSendpulseWebhook(req, res) {
 
   try {
     const event = getEvent(req.body);
-
-    // работаем только с incoming_message
     if (event?.title !== "incoming_message") return;
 
     const text = String(extractText(event) || "").trim();
@@ -123,59 +91,50 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    // /start
     if (text.toLowerCase() === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂"
+        text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂",
       });
       return;
     }
 
-const vars = event?.contact?.variables || {};
-const main_sign = normalizeMainSignFromVars(vars) || null;
+    const vars = event?.contact?.variables || {};
+    const main_sign = normalizeMainSignFromVars(vars) || null;
+    const active_signs = parseActiveSigns(vars);
 
-function parseActiveSigns(vars) {
-  const raw = vars?.active_signs || "";
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(String(raw));
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map(x => ({
-        sign: String(x?.sign || "").trim().toUpperCase(),
-        pct: Number(x?.pct ?? 0)
-      }))
-      .filter(x => x.sign && Number.isFinite(x.pct));
-  } catch {
-    return [];
-  }
-}
+    const profile = {
+      main_sign: main_sign || "БАРСУК",
+      active_signs,
+    };
 
-const active_signs = parseActiveSigns(vars);
+    // парсим партнёра из текста
+    const parsed = parsePartnerFromTextV4(text);
+    const partnerSign = parsed?.partnerSign || null;
 
-const profile = {
-  main_sign: main_sign || "БАРСУК",
-  active_signs
-};
+    // ВАЖНО: отправляем в GPT исходный текст (не вырезаем)
+    const result = await triadChat({
+      userText: text,
+      profile,
+      partnerSign,
+      model: process.env.OPENAI_MODEL || "gpt-5.2",
+      temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
+    });
 
-const parsed = parsePartnerFromTextV4(text);
-const partnerSign = parsed?.partnerSign || null;
+    const answer =
+      result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
-const result = await triadChat({
-  userText: text,
-  profile,
-  partnerSign,
-  model: process.env.OPENAI_MODEL || "gpt-5.2",
-  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
-});
+    // если GPT вдруг вернул экранированные сущности
+    const out = decodeHtmlEntities(answer);
 
-const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
+    // ✅ отправляем ОТВЕТ, а не debug
+    await sendpulseTelegramSendText({
+      contactId,
+      text: out,
+    });
 
-await sendpulseTelegramSendText({
-  contactId,
-  text: `Поняла партнёра как: ${partnerSign || "не нашла"}`
-});
+    // debug — только в логи
+    console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
