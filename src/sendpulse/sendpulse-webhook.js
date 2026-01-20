@@ -17,10 +17,11 @@ function extractText(event) {
 }
 
 function extractContactId(event) {
+  // В SendPulse это обычно contact.id (строка типа "68ee...")
   return (
-    event?.contact?.id ??                     // <-- SendPulse contact id (самое правильное)
-    event?.contact?.telegram_id ??            // иногда так
-    event?.info?.message?.channel_data?.chat_id ?? // Telegram chat_id (если твой sendpulse-api шлёт по нему)
+    event?.contact?.id ??
+    event?.info?.message?.channel_data?.id ??        // иногда так
+    event?.info?.message?.channel_data?.chat_id ??   // fallback (если вдруг отправляешь по chat_id)
     null
   );
 }
@@ -29,89 +30,14 @@ function normalizeMainSignFromVars(vars) {
   // vars.Animal у тебя типа "🦡 Барсук"
   const raw = vars?.Animal || "";
   return String(raw)
-    .replace(/[^\p{L}\s-]/gu, "") // убираем эмодзи и знаки
-    .trim()
-    .toUpperCase();
-}
-
-function toSignString(x) {
-  if (!x) return null;
-
-  // уже строка
-  if (typeof x === "string") return x;
-
-  // массив: берём первое осмысленное
-  if (Array.isArray(x)) {
-    for (const item of x) {
-      const v = toSignString(item);
-      if (v) return v;
-    }
-    return null;
-  }
-
-  // объект: пробуем разные поля
-  if (typeof x === "object") {
-    return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
-  }
-
-  return null;
-}
-
-function normalizeSignWord(s) {
-  if (!s) return null;
-
-  // убираем эмодзи/мусор, оставляем буквы/пробел/дефис
-  const cleaned = String(s)
     .replace(/[^\p{L}\s-]/gu, "")
     .trim()
     .toUpperCase();
-
-  // выцепим именно название знака (если фраза типа "МОЙ МУЖ ДРАКОН")
-  // ищем любое слово-знак из методички:
-  const known = [
-    "ДРАКОН","СКОРПИОН","ФЕНИКС","ВОЛК","ПОПУГАЙ","БАРСУК","ТЮЛЕНЬ","ОСЬМИНОГ",
-    "БОБЕР" // и т.д. (можешь дописать остальные)
-  ];
-  for (const k of known) {
-    if (cleaned.includes(k)) return k;
-  }
-
-  // если не нашли — вернём как есть (иногда там уже "ДРАКОН")
-  return cleaned || null;
 }
 
-export async function handleSendpulseWebhook(req, res) {
-  // 1) всегда быстро отвечаем OK
-  res.status(200).json({ ok: true });
-
-  try {
-    const event = getEvent(req.body);
-
-    // защитимся: работаем только с incoming_message
-    if (event?.title !== "incoming_message") return;
-
-    const text = String(extractText(event) || "").trim();
-    const contactId = extractContactId(event);
-
-    if (!text) return;
-    if (!contactId) {
-      console.error("No contactId in webhook payload");
-      return;
-    }
-
-    // /start можно игнорировать или отвечать коротко
-    if (text.toLowerCase() === "/start") {
-      await sendpulseTelegramSendText({
-        contactId,
-        text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂"
-      });
-      return;
-    }
-
-   const vars = event?.contact?.variables || {};
-const main_sign = normalizeMainSignFromVars(vars) || null;
-
 function parseActiveSigns(vars) {
+  // vars.active_signs: строка JSON вида:
+  // [{"sign":"БАРСУК","pct":4}, ...]
   const raw = vars?.active_signs || "";
   if (!raw) return [];
 
@@ -126,68 +52,120 @@ function parseActiveSigns(vars) {
       }))
       .filter(x => x.sign && Number.isFinite(x.pct));
   } catch (err) {
-    console.error("Bad active_signs JSON:", err, raw);
+    console.error("Bad active_signs JSON:", err);
     return [];
   }
 }
 
-const active_signs = parseActiveSigns(vars);
+// Универсально вытаскиваем "значение знака" из того, что вернул парсер
+function toSignString(x) {
+  if (!x) return null;
 
-const profile = {
-  main_sign: main_sign || "БАРСУК",
-  active_signs
-};
+  if (typeof x === "string") return x;
 
-const partnerSign = normalizeSignWord(toSignString(partnerParsed));
-
-function normalizePartnerSign(parsed) {
-  if (!parsed) return null;
-
-  // если парсер уже вернул строку
-  if (typeof parsed === "string") return parsed.trim().toUpperCase();
-
-  // если вернул массив кандидатов
-  if (Array.isArray(parsed)) {
-    const first = parsed[0];
-    if (!first) return null;
-    if (typeof first === "string") return first.trim().toUpperCase();
-    if (typeof first === "object") {
-      const v = first.sign || first.partnerSign || first.value || null;
-      return v ? String(v).trim().toUpperCase() : null;
+  if (Array.isArray(x)) {
+    for (const item of x) {
+      const v = toSignString(item);
+      if (v) return v;
     }
+    return null;
   }
 
-  // если вернул объект
-  if (typeof parsed === "object") {
-    const v = parsed.sign || parsed.partnerSign || parsed.value || null;
-    return v ? String(v).trim().toUpperCase() : null;
+  if (typeof x === "object") {
+    // ВАЖНО: тут должны быть ||
+    return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
   }
 
   return null;
 }
 
-const result = await triadChat({
-  userText: text,
-  profile,
-  partnerSign,
-  model: process.env.OPENAI_MODEL || "gpt-5.2",
-  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
-});
+// На всякий случай приводим к точному названию знака (если вдруг пришла фраза)
+function normalizeSignWord(s) {
+  if (!s) return null;
 
-    function decodeHtmlEntities(s = "") {
+  const cleaned = String(s)
+    .replace(/[^\p{L}\s-]/gu, "")
+    .trim()
+    .toUpperCase();
+
+  const known = [
+    "ДРАКОН","СКОРПИОН","ФЕНИКС","ВОЛК","ПОПУГАЙ","БАРСУК","ТЮЛЕНЬ","ОСЬМИНОГ",
+    "БОБЕР"
+    // можно дописать остальные знаки, но это не обязательно, если парсер возвращает уже точный знак
+  ];
+
+  for (const k of known) {
+    if (cleaned.includes(k)) return k;
+  }
+
+  return cleaned || null;
+}
+
+function decodeHtmlEntities(s = "") {
   return String(s)
     .replaceAll("&amp;", "&")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">");
 }
 
-const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
-const html = decodeHtmlEntities(answer);
+export async function handleSendpulseWebhook(req, res) {
+  // всегда быстро отвечаем OK
+  res.status(200).json({ ok: true });
 
-await sendpulseTelegramSendText({
-  contactId,
-  text: html
-});
+  try {
+    const event = getEvent(req.body);
+
+    // работаем только с incoming_message
+    if (event?.title !== "incoming_message") return;
+
+    const text = String(extractText(event) || "").trim();
+    const contactId = extractContactId(event);
+
+    if (!text) return;
+    if (!contactId) {
+      console.error("No contactId in webhook payload");
+      return;
+    }
+
+    // /start
+    if (text.toLowerCase() === "/start") {
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂"
+      });
+      return;
+    }
+
+    const vars = event?.contact?.variables || {};
+    const main_sign = normalizeMainSignFromVars(vars) || null;
+    const active_signs = parseActiveSigns(vars);
+
+    const profile = {
+      main_sign: main_sign || "БАРСУК",
+      active_signs
+    };
+
+  // 1. Парсим партнёра из текста
+const partnerParsed = parsePartnerFromTextV4(text);
+
+// 2. Приводим к строке знака
+const partnerSign = normalizeSignWord(toSignString(partnerParsed));
+
+const result = await triadChat({
+      userText: text,
+      profile,
+      partnerSign,
+      model: process.env.OPENAI_MODEL || "gpt-5.2",
+      temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
+    });
+
+    const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
+    const html = decodeHtmlEntities(answer);
+
+    await sendpulseTelegramSendText({
+      contactId,
+      text: html
+    });
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
