@@ -74,17 +74,21 @@ if (missing.length) {
   ];
 
   if (rel && partner && userMain) {
+  try {
     const insights = generateCompatibilityInsights({
       userSign: userMain,
       partnerSign: partner,
       kb
     });
-
     messages.push({
       role: "system",
       content: buildCompatibilitySystemBlock(insights)
     });
+  } catch (e) {
+    // не валим весь ответ, просто идём без совместимости
+    console.error("compatibility disabled:", e?.message || e);
   }
+}
 
   messages.push({
     role: "user",
