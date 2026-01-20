@@ -132,40 +132,52 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    const vars = event?.contact?.variables || {};
-    const main_sign = normalizeMainSignFromVars(vars) || null;
-    const active_signs = parseActiveSigns(vars);
+const vars = event?.contact?.variables || {};
+const main_sign = normalizeMainSignFromVars(vars) || null;
 
-    const profile = {
-      main_sign: main_sign || "БАРСУК",
-      active_signs
-    };
+function parseActiveSigns(vars) {
+  const raw = vars?.active_signs || "";
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(String(raw));
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map(x => ({
+        sign: String(x?.sign || "").trim().toUpperCase(),
+        pct: Number(x?.pct ?? 0)
+      }))
+      .filter(x => x.sign && Number.isFinite(x.pct));
+  } catch {
+    return [];
+  }
+}
 
-  // 1. Парсим партнёра из текста
+const active_signs = parseActiveSigns(vars);
+
+const profile = {
+  main_sign: main_sign || "БАРСУК",
+  active_signs
+};
+
+// ✅ ПАРСЕР ПАРТНЁРА
 const partnerParsed = parsePartnerFromTextV4(text);
+const partnerSign = normalizeSignWord(toSignString(partnerParsed)) || null;
 
-// 2. Приводим к строке знака
-const partnerSign = normalizeSignWord(toSignString(partnerParsed));
-
-// fallback: если парсер не понял знак — попробуем вытащить прямо из текста
-let finalPartnerSign = partnerSign;
-if (!finalPartnerSign) finalPartnerSign = normalizeSignWord(text);
-
+// ✅ ВЫЗОВ МОДЕЛИ
 const result = await triadChat({
   userText: text,
   profile,
-  partnerSign: finalPartnerSign,
+  partnerSign,
   model: process.env.OPENAI_MODEL || "gpt-5.2",
   temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
 });
 
-    const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
-    const html = decodeHtmlEntities(answer);
+const answer = result?.answer?.trim() || "Я рядом. Скажи, что именно в отношениях с мужем сейчас самое болезненное?";
 
-    await sendpulseTelegramSendText({
-      contactId,
-      text: html
-    });
+await sendpulseTelegramSendText({
+  contactId,
+  text: answer
+});
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
