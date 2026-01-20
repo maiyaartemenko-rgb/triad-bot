@@ -2,10 +2,11 @@
 import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
+import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
 
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
-  return Array.isArray(payload) ? (payload[0] || {}) : (payload || {});
+  return Array.isArray(payload) ? (payload[0] ?? {}) : (payload ?? {});
 }
 
 function extractText(event) {
@@ -54,6 +55,7 @@ function parseActiveSigns(vars) {
 function toSignString(x) {
   if (!x) return null;
   if (typeof x === "string") return x;
+
   if (Array.isArray(x)) {
     for (const item of x) {
       const v = toSignString(item);
@@ -61,9 +63,12 @@ function toSignString(x) {
     }
     return null;
   }
+
   if (typeof x === "object") {
+    // ✅ тут должны быть ||
     return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
   }
+
   return null;
 }
 
@@ -85,19 +90,37 @@ export async function handleSendpulseWebhook(req, res) {
     const text = String(extractText(event) || "").trim();
     const contactId = extractContactId(event);
 
-    if (!text) return;
+    // ✅ сначала базовые проверки
     if (!contactId) {
       console.error("No contactId in webhook payload");
       return;
     }
+    if (!text) return;
+
+    // ✅ команды не записываем в память
+    if (text.toLowerCase() === "/reset") {
+      clearHistory(contactId);
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "Ок, очистила контекст 🧼",
+      });
+      return;
+    }
 
     if (text.toLowerCase() === "/start") {
+      clearHistory(contactId); // удобно: старт = новая сессия
       await sendpulseTelegramSendText({
         contactId,
         text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂",
       });
       return;
     }
+
+    // ✅ 1) берём историю ДО добавления текущего сообщения
+    const history = getHistory(contactId);
+
+    // ✅ 2) сохраняем текущее сообщение пользователя
+    pushToHistory(contactId, "user", text);
 
     const vars = event?.contact?.variables || {};
     const main_sign = normalizeMainSignFromVars(vars) || null;
@@ -112,11 +135,11 @@ export async function handleSendpulseWebhook(req, res) {
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
 
-    // ВАЖНО: отправляем в GPT исходный текст (не вырезаем)
     const result = await triadChat({
       userText: text,
       profile,
       partnerSign,
+      history, // ✅ вот теперь history реально существует и передаётся
       model: process.env.OPENAI_MODEL || "gpt-5.2",
       temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
     });
@@ -127,13 +150,14 @@ export async function handleSendpulseWebhook(req, res) {
     // если GPT вдруг вернул экранированные сущности
     const out = decodeHtmlEntities(answer);
 
-    // ✅ отправляем ОТВЕТ, а не debug
     await sendpulseTelegramSendText({
       contactId,
       text: out,
     });
 
-    // debug — только в логи
+    // ✅ 3) сохраняем ответ ассистента
+    pushToHistory(contactId, "assistant", answer);
+
     console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
