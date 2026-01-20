@@ -1,4 +1,4 @@
-// triad-compatibility-runtime.js
+// src/triad/triad-compatibility-runtime.js
 // Считает внутреннюю "динамику пары" по internal_code (3 оси).
 // ВАЖНО: это внутренний блок, его нельзя показывать пользователю.
 
@@ -68,20 +68,42 @@ function axisPatterns(axisKey, userLevel, partnerLevel) {
   return { good: [], tension: [], risk: [] };
 }
 
+function requireInternalCode(signData, signName) {
+  const code = signData?.internal_code;
+  if (!code || typeof code !== "object") {
+    throw new Error(`No internal_code for sign: ${signName}`);
+  }
+  for (const axis of AXES) {
+    const v = code[axis.key];
+    if (!(v in LEVEL)) {
+      throw new Error(`Bad level for ${signName}.${axis.key}: ${v}`);
+    }
+  }
+  return code;
+}
+
 /**
  * kb — это то, что ты читаешь из triad_signs.json.
  * В твоём triad-context.js знаки лежат в kb.signs.
  */
 export function generateCompatibilityInsights({ userSign, partnerSign, kb }) {
-  const signs = kb?.signs || {};
+  // ✅ универсально: поддерживаем оба формата
+  // 1) { signs: {...} }
+  // 2) { "ДРАКОН": {...}, ... }
+  const signs = kb?.signs && typeof kb.signs === "object" ? kb.signs : kb;
+
+  if (!signs || typeof signs !== "object") {
+    throw new Error("KB is empty or has wrong format");
+  }
+
   const U = signs[userSign];
   const P = signs[partnerSign];
 
   if (!U) throw new Error(`No sign data for userSign: ${userSign}`);
   if (!P) throw new Error(`No sign data for partnerSign: ${partnerSign}`);
 
-  const userCode = U.internal_code;
-  const partnerCode = P.internal_code;
+  const userCode = requireInternalCode(U, userSign);
+  const partnerCode = requireInternalCode(P, partnerSign);
 
   const good = [];
   const tension = [];
@@ -104,8 +126,7 @@ export function generateCompatibilityInsights({ userSign, partnerSign, kb }) {
     },
     behavioral_facts: {
       user_under_stress: U.behavior?.under_stress || [],
-
-partner_under_stress: P.behavior?.under_stress || [],
+      partner_under_stress: P.behavior?.under_stress || [],
       user_traps: U.traps || [],
       partner_traps: P.traps || []
     }
