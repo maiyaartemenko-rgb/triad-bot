@@ -103,7 +103,7 @@ export async function triadChat({
   }
 
   // ✅ добавляем память до текущего запроса
-  const hist = normalizeHistory(history);
+  const hist = Array.isArray(history) ? history : [];
   if (hist.length) {
     messages.push(...hist);
   }
