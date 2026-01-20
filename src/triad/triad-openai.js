@@ -38,10 +38,22 @@ function normalizeActives(active_signs) {
     .filter(x => x.sign);
 }
 
+// берём только роли user/assistant и только текст
+function normalizeHistory(history) {
+  const arr = Array.isArray(history) ? history : [];
+  return arr
+    .map(m => ({
+      role: m?.role === "assistant" ? "assistant" : "user",
+      content: String(m?.content || "").trim()
+    }))
+    .filter(m => m.content);
+}
+
 export async function triadChat({
   userText,
   profile,
   partnerSign = null,
+  history = [],              // ✅ ПАМЯТЬ
   model = "gpt-5.2",
   temperature = 0.6
 }) {
@@ -57,14 +69,15 @@ export async function triadChat({
     partnerSign: partner
   });
 
-if (missing.length) {
-  return {
-    mode: rel ? "compatibility" : "core",
-    missing_signs: missing,
-    answer:
-      `Не нашла методичку для знаков: ${missing.join(", ")}. Проверь triad_signs.json (ключи должны совпадать: ДРАКОН, СКОРПИОН и т.д.).`
-  };
-}
+  if (missing.length) {
+    return {
+      mode: rel ? "compatibility" : "core",
+      missing_signs: missing,
+      answer: `Не нашла методичку для знаков: ${missing.join(
+        ", "
+      )}. Проверь triad_signs.json (ключи должны совпадать: ДРАКОН, СКОРПИОН и т.д.).`
+    };
+  }
 
   const messages = [
     { role: "system", content: TRIAD_CORE_SYSTEM_PROMPT },
@@ -74,22 +87,28 @@ if (missing.length) {
   ];
 
   if (rel && partner && userMain) {
-  try {
-    const insights = generateCompatibilityInsights({
-      userSign: userMain,
-      partnerSign: partner,
-      kb
-    });
-    messages.push({
-      role: "system",
-      content: buildCompatibilitySystemBlock(insights)
-    });
-  } catch (e) {
-    // не валим весь ответ, просто идём без совместимости
-    console.error("compatibility disabled:", e?.message || e);
+    try {
+      const insights = generateCompatibilityInsights({
+        userSign: userMain,
+        partnerSign: partner,
+        kb
+      });
+      messages.push({
+        role: "system",
+        content: buildCompatibilitySystemBlock(insights)
+      });
+    } catch (e) {
+      console.error("compatibility disabled:", e?.message || e);
+    }
   }
-}
 
+  // ✅ добавляем память до текущего запроса
+  const hist = normalizeHistory(history);
+  if (hist.length) {
+    messages.push(...hist);
+  }
+
+  // ✅ текущий запрос — всегда последним user-сообщением
   messages.push({
     role: "user",
     content: [
