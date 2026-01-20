@@ -2,7 +2,7 @@
 import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
-import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
+import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
 
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
