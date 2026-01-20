@@ -160,29 +160,21 @@ const profile = {
 };
 
 const parsed = parsePartnerFromTextV4(text);
-
-// partnerSign = строка типа "ДРАКОН" или null
-const partnerSign = parsed?.partnerSign ? String(parsed.partnerSign).trim().toUpperCase() : null;
-
-// если нашли знак партнёра — форсим режим "про отношения"
-let userText = text;
-if (partnerSign) {
-  userText = `${text}\n\n(контекст: отношения/пара)`;
-}
+const partnerSign = parsed?.partnerSign || null;
 
 const result = await triadChat({
-  userText,
+  userText: text,
   profile,
-  partnerSign, // ТУТ ДОЛЖНА БЫТЬ СТРОКА типа "ДРАКОН"
+  partnerSign,
   model: process.env.OPENAI_MODEL || "gpt-5.2",
-  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
+  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
 });
 
-const answer = result?.answer?.trim() || "Я рядом. Скажи, что именно в отношениях с мужем сейчас самое болезненное?";
+const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
 await sendpulseTelegramSendText({
   contactId,
-  text: answer
+  text: `Поняла партнёра как: ${partnerSign || "не нашла"}`
 });
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
