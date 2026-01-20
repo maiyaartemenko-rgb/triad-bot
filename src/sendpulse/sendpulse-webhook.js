@@ -18,12 +18,7 @@ function extractText(event) {
 
 function extractContactId(event) {
   // В SendPulse это обычно contact.id (строка типа "68ee...")
-  return (
-    event?.contact?.id ??
-    event?.info?.message?.channel_data?.id ??        // иногда так
-    event?.info?.message?.channel_data?.chat_id ??   // fallback (если вдруг отправляешь по chat_id)
-    null
-  );
+  return event?.contact?.id ?? null;
 }
 
 function normalizeMainSignFromVars(vars) {
@@ -151,13 +146,17 @@ const partnerParsed = parsePartnerFromTextV4(text);
 // 2. Приводим к строке знака
 const partnerSign = normalizeSignWord(toSignString(partnerParsed));
 
+// fallback: если парсер не понял знак — попробуем вытащить прямо из текста
+let finalPartnerSign = partnerSign;
+if (!finalPartnerSign) finalPartnerSign = normalizeSignWord(text);
+
 const result = await triadChat({
-      userText: text,
-      profile,
-      partnerSign,
-      model: process.env.OPENAI_MODEL || "gpt-5.2",
-      temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
-    });
+  userText: text,
+  profile,
+  partnerSign: finalPartnerSign,
+  model: process.env.OPENAI_MODEL || "gpt-5.2",
+  temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6)
+});
 
     const answer = result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
     const html = decodeHtmlEntities(answer);
