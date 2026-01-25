@@ -1,4 +1,5 @@
 // src/sendpulse/sendpulse-api.js
+import fetch from "node-fetch";
 
 let cachedToken = null;
 let tokenExpiresAt = 0;
@@ -24,8 +25,8 @@ async function getAccessToken() {
     })
   });
 
-  const data = await resp.json();
-  if (!resp.ok) {
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.access_token) {
     throw new Error(`SendPulse token error ${resp.status}: ${JSON.stringify(data)}`);
   }
 
@@ -35,8 +36,30 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-export async function sendpulseTelegramSendText({ contactId, text }) {
+/**
+ * Отправка текста (и кнопок) в Telegram через SendPulse.
+ * buttons: [{ text: "BASIC 999₽", url: "https://..." }, ...]
+ */
+export async function sendpulseTelegramSendText({ contactId, text, buttons = null }) {
   const token = await getAccessToken();
+
+  const payload = {
+    contact_id: String(contactId),
+    message: {
+      type: "text",
+      text: String(text ?? ""),
+      parse_mode: "HTML"
+    }
+  };
+
+  // ✅ Inline-кнопки Telegram
+  if (Array.isArray(buttons) && buttons.length) {
+    payload.message.reply_markup = {
+      inline_keyboard: buttons.map((b) => [
+        { text: String(b.text ?? "Открыть"), url: String(b.url ?? "") }
+      ])
+    };
+  }
 
   const resp = await fetch("https://api.sendpulse.com/telegram/contacts/send", {
     method: "POST",
@@ -44,14 +67,7 @@ export async function sendpulseTelegramSendText({ contactId, text }) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`
     },
-   body: JSON.stringify({
-  contact_id: String(contactId),
-  message: {
-    type: "text",
-    text: text,
-    parse_mode: "HTML"
-  }
-})
+    body: JSON.stringify(payload)
   });
 
   const data = await resp.json().catch(() => ({}));

@@ -102,18 +102,22 @@ console.log("CONTACT ID:", contactId);
     // ✅ команды не записываем в память
     if (text.toLowerCase() === "/reset") {
       clearHistory(contactId);
-      await sendpulseTelegramSendText({
-        contactId,
-        text: "Ок, очистила контекст 🧼",
-      });
-      return;
+     await sendpulseTelegramSendText({
+  contactId,
+  text: "Тест кнопок 👇",
+  buttons: [
+    { text: "BASIC 999₽", url: "https://example.com/basic" },
+    { text: "UNLIMITED 2999₽", url: "https://example.com/unlimited" }
+  ]
+});
+return;
     }
 
     if (text.toLowerCase() === "/start") {
       clearHistory(contactId); // удобно: старт = новая сессия
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет! Напиши вопрос — и я отвечу по твоему профилю 🙂",
+        text: "Привет!",
       });
       return;
     }
