@@ -90,6 +90,7 @@ export async function handleSendpulseWebhook(req, res) {
 
     const text = String(extractText(event) || "").trim();
     const contactId = extractContactId(event);
+console.log("CONTACT ID:", contactId);
 
     // ✅ сначала базовые проверки
     if (!contactId) {
