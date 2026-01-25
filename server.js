@@ -3,11 +3,11 @@ import dotenv from "dotenv";
 
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
-import { handleTributeWebhook } from "./src/tribute/tribute-webhook.js";
+import { handleTributeWebhook, testActivate } from "./src/tribute/tribute-webhook.js";
 
 dotenv.config();
 
-const app = express(); // ✅ app создаётся ДО любых app.post
+const app = express();
 
 // ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
@@ -30,6 +30,9 @@ app.post(
   express.json({ limit: "2mb" }),
   handleTributeWebhook
 );
+
+// ---------- TEST ACTIVATE (для проверки без Tribute) ----------
+app.get("/test/activate", testActivate);
 
 // ---------- OPTIONAL: CHAT API (если нужен) ----------
 app.post("/chat", async (req, res) => {
