@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import fs from "node:fs";
 
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
@@ -12,19 +13,26 @@ const app = express();
 // ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
 
-// ---------- HEALTH ----------
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
-import fs from "node:fs";
-
 app.get("/debug/access", (req, res) => {
   try {
+    if (!fs.existsSync("/data/access.json")) {
+      return res.json({
+        ok: true,
+        users: {},
+        note: "access.json ещё не создан — появится после первого вопроса"
+      });
+    }
+
     const txt = fs.readFileSync("/data/access.json", "utf8");
     res.type("json").send(txt);
   } catch (e) {
-    res.status(404).json({ ok: false, error: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+});
+
+// ---------- HEALTH ----------
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
 });
 
 // ---------- SENDPULSE WEBHOOK ----------
