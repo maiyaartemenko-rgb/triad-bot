@@ -74,3 +74,29 @@ export async function handleTributeWebhook(req, res) {
   setAccess(contactId, { plan });
   res.send(`OK: ${contactId} → ${plan}`);
 }
+// ---------------- TEST ACTIVATE (без Tribute, вручную) ----------------
+export async function testActivate(req, res) {
+  try {
+    const contactId = req.query.contactId || null;
+    const plan = req.query.plan || null;
+
+    if (!contactId || !plan) {
+      return res.status(400).send("need contactId & plan");
+    }
+
+    // здесь ты включаешь доступ пользователю
+    // если у тебя access-store.js — используем его
+    // иначе просто логируем
+    try {
+      const { setAccess } = await import("../access/access-store.js");
+      setAccess(contactId, { plan });
+    } catch (e) {
+      console.log("access-store not found, test mode only");
+    }
+
+    res.send(`OK: ${contactId} -> ${plan}`);
+  } catch (e) {
+    console.error("TEST_ACTIVATE_ERROR:", e);
+    res.status(500).send("error");
+  }
+}
