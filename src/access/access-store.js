@@ -4,13 +4,17 @@ import path from "node:path";
 
 const FILE = path.resolve(process.cwd(), "data/access.json");
 
-// Гарантируем, что файл есть
+// { users: { [contactId]: { plan, paid_until, trial_started_at, daily_used, day } } }
+
 function safeLoad() {
   try {
     const txt = fs.readFileSync(FILE, "utf8");
-    return JSON.parse(txt);
+    const parsed = JSON.parse(txt);
+    if (!parsed || typeof parsed !== "object") return { users: {} };
+    if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
+    return parsed;
   } catch {
-    return { users: {} }; // { users: { [contactId]: { plan, paid_until, daily_used, day } } }
+    return { users: {} };
   }
 }
 
@@ -20,50 +24,76 @@ function safeSave(db) {
 }
 
 export function getAccess(contactId) {
+  if (!contactId) return null;
   const db = safeLoad();
-  return db.users[contactId] || null;
+  return db.users[String(contactId)] || null;
 }
 
 export function setAccess(contactId, data) {
+  if (!contactId) return null;
+  const id = String(contactId);
   const db = safeLoad();
-  db.users[contactId] = { ...(db.users[contactId] || {}), ...data };
+  db.users[id] = { ...(db.users[id] || {}), ...(data || {}) };
   safeSave(db);
-  return db.users[contactId];
+  return db.users[id];
 }
 
-// Ежедневный лимит: basic = 3, unlimited = Infinity, trial = 3/день, 3 дня
 function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isPaidActive(rec) {
+  if (!rec) return false;
+  if (rec.plan !== "basic" && rec.plan !== "unlimited") return false;
+  if (!rec.paid_until) return false;
+  const t = Date.parse(rec.paid_until);
+  if (!Number.isFinite(t)) return false;
+  return Date.now() < t;
 }
 
 function isTrialActive(rec) {
   if (!rec?.trial_started_at) return false;
-  const started = new Date(rec.trial_started_at).getTime();
+  const started = Date.parse(rec.trial_started_at);
+  if (!Number.isFinite(started)) return false;
   const diffDays = Math.floor((Date.now() - started) / 86400000);
   return diffDays < 3; // 3 дня
 }
 
 function planDailyLimit(rec) {
-  if (!rec) return 0;
-  if (rec.plan === "unlimited") return Infinity;
-  if (rec.plan === "basic") return 3;
+  // 1) если подписка активна — она главнее
+  if (isPaidActive(rec)) {
+    if (rec.plan === "unlimited") return Infinity;
+    if (rec.plan === "basic") return 3;
+  }
+
+  // 2) если подписка не активна — пробуем триал
   if (isTrialActive(rec)) return 3;
+
+  // 3) иначе доступа нет
   return 0;
 }
 
 export function ensureUserRecord(contactId) {
-  const rec = getAccess(contactId);
+  const id = String(contactId);
+  const rec = getAccess(id);
   if (rec) return rec;
+
   // создаём триал при первом обращении
-  return setAccess(contactId, {
-    plan: null,
+  return setAccess(id, {
+    plan: null, // пока не оплачено
+    paid_until: null,
     trial_started_at: new Date().toISOString(),
     daily_used: 0,
     day: todayStr(),
   });
 }
 
+/**
+ * checkAndConsumeQuota(contactId)
+ * return:
+ *  { ok:true, left:number|Infinity, plan:"basic"|"unlimited"|"trial" }
+ *  { ok:false, left:0, plan:null|"trial", reason:"trial"|"limit"|"no_access" }
+ */
 export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
@@ -75,16 +105,30 @@ export function checkAndConsumeQuota(contactId) {
   }
 
   const limit = planDailyLimit(rec);
+
+  // определим текущий "режим" для UI
+  const modePlan = isPaidActive(rec)
+    ? rec.plan
+    : (isTrialActive(rec) ? "trial" : null);
+
   if (limit === Infinity) {
     setAccess(contactId, rec);
-    return { ok: true, left: Infinity, plan: rec.plan || "trial" };
+    return { ok: true, left: Infinity, plan: modePlan || "trial" };
+  }
+
+  if (limit <= 0) {
+    // триал закончился и подписки нет
+    setAccess(contactId, rec);
+    return { ok: false, left: 0, plan: modePlan, reason: "no_access" };
   }
 
   if (rec.daily_used < limit) {
     rec.daily_used += 1;
     setAccess(contactId, rec);
-    return { ok: true, left: limit - rec.daily_used, plan: rec.plan || (isTrialActive(rec) ? "trial" : null) };
+    return { ok: true, left: Math.max(0, limit - rec.daily_used), plan: modePlan || "trial" };
   }
 
-  return { ok: false, left: 0, plan: rec.plan || (isTrialActive(rec) ? "trial" : null) };
+  // дневной лимит исчерпан
+  setAccess(contactId, rec);
+  return { ok: false, left: 0, plan: modePlan, reason: "limit" };
 }
