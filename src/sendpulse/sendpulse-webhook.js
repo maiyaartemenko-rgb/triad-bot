@@ -1,11 +1,16 @@
 // src/sendpulse/sendpulse-webhook.js
 import { triadChat } from "../triad/triad-openai.js";
-import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
-import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
-import { checkAndConsumeQuota, ensureUserRecord } from "../access/access-store.js";
 
-// SendPulse присылает массив событий. Берём первое.
+import {
+  sendpulseTelegramSendText,
+  sendpulseTelegramSendButtons
+} from "./sendpulse-api.js";
+
+import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
+import { checkAndConsumeQuota } from "../billing/quota.js"; // ← убедись, что файл есть
+
+// ---------- helpers ----------
 function getEvent(payload) {
   return Array.isArray(payload) ? (payload[0] ?? {}) : (payload ?? {});
 }
@@ -19,12 +24,10 @@ function extractText(event) {
 }
 
 function extractContactId(event) {
-  // В SendPulse это обычно contact.id (строка типа "68ee...")
   return event?.contact?.id ?? null;
 }
 
 function normalizeMainSignFromVars(vars) {
-  // vars.Animal у тебя типа "🦡 Барсук"
   const raw = vars?.Animal || "";
   return String(raw)
     .replace(/[^\p{L}\s-]/gu, "")
@@ -33,8 +36,6 @@ function normalizeMainSignFromVars(vars) {
 }
 
 function parseActiveSigns(vars) {
-  // vars.active_signs: строка JSON вида:
-  // [{"sign":"БАРСУК","pct":4}, ...]
   const raw = vars?.active_signs || "";
   if (!raw) return [];
   try {
@@ -52,27 +53,6 @@ function parseActiveSigns(vars) {
   }
 }
 
-// если где-то понадобится
-function toSignString(x) {
-  if (!x) return null;
-  if (typeof x === "string") return x;
-
-  if (Array.isArray(x)) {
-    for (const item of x) {
-      const v = toSignString(item);
-      if (v) return v;
-    }
-    return null;
-  }
-
-  if (typeof x === "object") {
-    // ✅ тут должны быть ||
-    return toSignString(x.sign || x.partnerSign || x.value || x.name || x.text);
-  }
-
-  return null;
-}
-
 function decodeHtmlEntities(s = "") {
   return String(s)
     .replaceAll("&amp;", "&")
@@ -80,6 +60,65 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&gt;", ">");
 }
 
+function buildPayLinks(contactId) {
+  // ✅ ВАЖНО: сюда вставь свои реальные ссылки из Tribute (одна на basic, одна на unlimited)
+  const BASIC_URL = process.env.TRIBUTE_BASIC_URL || "";
+  const UNLIMITED_URL = process.env.TRIBUTE_UNLIMITED_URL || "";
+
+  // если ты хочешь одну и ту же ссылку, а plan различать параметром — можно так:
+  // const BASIC_URL = process.env.TRIBUTE_PAY_URL || "";
+  // const UNLIMITED_URL = process.env.TRIBUTE_PAY_URL || "";
+
+  const basic = BASIC_URL
+    ? `${BASIC_URL}${BASIC_URL.includes("?") ? "&" : "?"}contactId=${encodeURIComponent(
+        contactId
+      )}&plan=basic`
+    : null;
+
+  const unlimited = UNLIMITED_URL
+    ? `${UNLIMITED_URL}${UNLIMITED_URL.includes("?") ? "&" : "?"}contactId=${encodeURIComponent(
+        contactId
+      )}&plan=unlimited`
+    : null;
+
+  return { basic, unlimited };
+}
+
+async function sendPaywall(contactId) {
+  const { basic, unlimited } = buildPayLinks(contactId);
+
+  const text = [
+    "⛔ Дневной лимит вопросов исчерпан.",
+    "Завтра можно будет снова задать 3 вопроса бесплатно.",
+    "",
+    "Оформи доступ, чтобы продолжить:",
+    "• 990 ₽ — 3 вопроса в день",
+    "• 2900 ₽ — безлимит",
+  ].join("\n");
+
+  // если кнопки не сконфигурены — хотя бы текстом
+  if (!basic || !unlimited) {
+    await sendpulseTelegramSendText({
+      contactId,
+      text:
+        text +
+        "\n\n⚠️ Ссылки оплаты не настроены. Проверь переменные TRIBUTE_BASIC_URL и TRIBUTE_UNLIMITED_URL.",
+    });
+    return;
+  }
+
+  // ✅ отправляем кнопки
+  await sendpulseTelegramSendButtons({
+    contactId,
+    text,
+    buttons: [
+      { text: "Оплатить 990 ₽ (3/день)", url: basic },
+      { text: "Оплатить 2900 ₽ (безлимит)", url: unlimited },
+    ],
+  });
+}
+
+// ---------- main ----------
 export async function handleSendpulseWebhook(req, res) {
   // всегда быстро отвечаем OK
   res.status(200).json({ ok: true });
@@ -90,81 +129,63 @@ export async function handleSendpulseWebhook(req, res) {
 
     const text = String(extractText(event) || "").trim();
     const contactId = extractContactId(event);
-console.log("CONTACT ID:", contactId);
 
-    // ✅ сначала базовые проверки
     if (!contactId) {
       console.error("No contactId in webhook payload");
       return;
     }
     if (!text) return;
 
-    // ✅ команды не записываем в память
-    if (text.toLowerCase() === "/reset") {
-      clearHistory(contactId);
-     await sendpulseTelegramSendText({
-  contactId,
-  text: "Тест кнопок 👇",
-  buttons: [
-    { text: "BASIC 999₽", url: "https://example.com/basic" },
-    { text: "UNLIMITED 2999₽", url: "https://example.com/unlimited" }
-  ]
-});
-return;
-    }
-
+    // ✅ команды
     if (text.toLowerCase() === "/start") {
-      clearHistory(contactId); // удобно: старт = новая сессия
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет!",
+        text: "Привет! Напиши вопрос — и я отвечу 🙂",
       });
       return;
     }
 
-    // ✅ 1) берём историю ДО добавления текущего сообщения
-    const history = getHistory(contactId);
+    if (text.toLowerCase() === "/reset") {
+      clearHistory(contactId);
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "Ок, очистила контекст 🧼",
+      });
+      return;
+    }
 
-    // ✅ 2) сохраняем текущее сообщение пользователя
+    // ✅ 1) сохраняем входящее в память
     pushToHistory(contactId, "user", text);
 
+    // ✅ 2) достаем историю (последние 10 сообщений)
+    const history = getHistory(contactId, 10);
+
+    // ✅ 3) проверка лимитов ПЕРЕД GPT
+    const gate = checkAndConsumeQuota(contactId);
+    if (!gate.ok) {
+      await sendPaywall(contactId);
+      return;
+    }
+
+    // профиль
     const vars = event?.contact?.variables || {};
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
-
     const profile = {
       main_sign: main_sign || "БАРСУК",
       active_signs,
     };
 
-    // парсим партнёра из текста
+    // парсим партнёра
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
-// ...внутри handleSendpulseWebhook после того как получили contactId:
-ensureUserRecord(contactId); // создаст триал, если юзера нет
 
-// Проверка лимитов перед ответом
-const gate = checkAndConsumeQuota(contactId);
-if (!gate.ok) {
-  // триал закончился или дневной лимит исчерпан
-  await sendpulseTelegramSendText({
-    contactId,
-    text: [
-      "⛔ Дневной лимит вопросов исчерпан.",
-      "Оформи доступ, чтобы продолжить:",
-      "• 999 ₽ — 3 вопроса в день",
-      "• 2999 ₽ — безлимит",
-      "",
-      "Нажми кнопку оплаты в боте (или напиши «Оплата»)."
-    ].join("\n")
-  });
-  return;
-}
+    // GPT
     const result = await triadChat({
       userText: text,
       profile,
       partnerSign,
-      history, // ✅ вот теперь history реально существует и передаётся
+      history, // ✅ важно
       model: process.env.OPENAI_MODEL || "gpt-5.2",
       temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
     });
@@ -172,7 +193,6 @@ if (!gate.ok) {
     const answer =
       result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
-    // если GPT вдруг вернул экранированные сущности
     const out = decodeHtmlEntities(answer);
 
     await sendpulseTelegramSendText({
@@ -180,7 +200,7 @@ if (!gate.ok) {
       text: out,
     });
 
-    // ✅ 3) сохраняем ответ ассистента
+    // ✅ 4) сохраняем ответ ассистента
     pushToHistory(contactId, "assistant", answer);
 
     console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);

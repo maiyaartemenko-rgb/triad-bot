@@ -20,12 +20,12 @@ async function getAccessToken() {
     body: JSON.stringify({
       grant_type: "client_credentials",
       client_id,
-      client_secret
-    })
+      client_secret,
+    }),
   });
 
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || !data?.access_token) {
+  if (!resp.ok) {
     throw new Error(`SendPulse token error ${resp.status}: ${JSON.stringify(data)}`);
   }
 
@@ -35,38 +35,19 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-/**
- * Отправка текста (и кнопок) в Telegram через SendPulse.
- * buttons: [{ text: "BASIC 999₽", url: "https://..." }, ...]
- */
-export async function sendpulseTelegramSendText({ contactId, text, buttons = null }) {
+async function sendToSendPulseTelegram(contactId, message) {
   const token = await getAccessToken();
-
-  const payload = {
-    contact_id: String(contactId),
-    message: {
-      type: "text",
-      text: String(text ?? ""),
-      parse_mode: "HTML"
-    }
-  };
-
-  // ✅ Inline-кнопки Telegram
-  if (Array.isArray(buttons) && buttons.length) {
-    payload.message.reply_markup = {
-      inline_keyboard: buttons.map((b) => [
-        { text: String(b.text ?? "Открыть"), url: String(b.url ?? "") }
-      ])
-    };
-  }
 
   const resp = await fetch("https://api.sendpulse.com/telegram/contacts/send", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      contact_id: String(contactId),
+      message,
+    }),
   });
 
   const data = await resp.json().catch(() => ({}));
@@ -75,4 +56,55 @@ export async function sendpulseTelegramSendText({ contactId, text, buttons = nul
   }
 
   return data;
+}
+
+export async function sendpulseTelegramSendText({ contactId, text }) {
+  return sendToSendPulseTelegram(contactId, {
+    type: "text",
+    text: String(text ?? ""),
+    parse_mode: "HTML",
+  });
+}
+
+/**
+ * Отправка текста + кнопок (URL)
+ * ВАЖНО: у SendPulse формат кнопок может называться по-разному в разных каналах.
+ * Поэтому мы:
+ * 1) кладём кнопки в message.buttons (часто работает)
+ * 2) дублируем ссылки в тексте (фолбэк — даже если кнопки не отрисуются)
+ */
+export async function sendpulseTelegramSendButtons({
+  contactId,
+  text,
+  buttons = [], // [{ text: "Оплатить", url: "https://..." }, ...]
+}) {
+  const safeButtons = Array.isArray(buttons) ? buttons.filter(b => b?.text && b?.url) : [];
+
+  const fallbackLinks =
+    safeButtons.length
+      ? "\n\n" +
+        safeButtons
+          .map((b) => `• <a href="${String(b.url)}">${String(b.text)}</a>`)
+          .join("\n")
+      : "";
+
+  const finalText = String(text ?? "") + fallbackLinks;
+
+  return sendToSendPulseTelegram(contactId, {
+    type: "text",
+    text: finalText,
+    parse_mode: "HTML",
+
+    // попытка №1 (часто работает)
+    buttons: safeButtons.map((b) => ({
+      type: "url",
+      text: String(b.text),
+      url: String(b.url),
+    })),
+
+    // попытка №2 (на всякий случай — некоторые реализации любят "keyboard")
+    keyboard: safeButtons.map((b) => ([
+      { type: "url", text: String(b.text), url: String(b.url) }
+    ])),
+  });
 }

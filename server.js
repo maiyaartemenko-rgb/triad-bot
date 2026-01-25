@@ -16,6 +16,16 @@ app.use(express.json({ limit: "2mb" }));
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
+import fs from "node:fs";
+
+app.get("/debug/access", (req, res) => {
+  try {
+    const txt = fs.readFileSync("/data/access.json", "utf8");
+    res.type("json").send(txt);
+  } catch (e) {
+    res.status(404).json({ ok: false, error: String(e?.message || e) });
+  }
+});
 
 // ---------- SENDPULSE WEBHOOK ----------
 app.post(
