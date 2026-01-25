@@ -1,29 +1,37 @@
 import express from "express";
 import dotenv from "dotenv";
+
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
+import { handleTributeWebhook } from "./src/tribute/tribute-webhook.js";
 
 dotenv.config();
 
-const app = express();
+const app = express(); // ✅ app создаётся ДО любых app.post
+
+// ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
-app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
-const PORT = process.env.PORT || 3000;
-
-// Health-check
+// ---------- HEALTH ----------
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Основной эндпоинт, который будет дёргать SendPulse
-// ожидает JSON:
-// {
-//   "text": "вопрос пользователя",
-//   "telegram_id": "123",
-//   "profile": { "main_sign":"...", "active_signs":[{"sign":"..","pct":..}] },
-//   "partnerSign": "..." // optional
-// }
+// ---------- SENDPULSE WEBHOOK ----------
+app.post(
+  "/sendpulse/webhook",
+  express.json({ limit: "2mb" }),
+  handleSendpulseWebhook
+);
+
+// ---------- TRIBUTE WEBHOOK ----------
+app.post(
+  "/tribute/webhook",
+  express.json({ limit: "2mb" }),
+  handleTributeWebhook
+);
+
+// ---------- OPTIONAL: CHAT API (если нужен) ----------
 app.post("/chat", async (req, res) => {
   try {
     const body = req.body || {};
@@ -35,18 +43,17 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Missing text" });
     }
 
-    // вызываем твой движок
     const result = await triadChat({
       userText: text,
       profile,
-      partnerSign
+      partnerSign,
     });
 
     res.json({
       ok: true,
       answer: result.answer,
       mode: result.mode,
-      missing_signs: result.missing_signs || []
+      missing_signs: result.missing_signs || [],
     });
   } catch (err) {
     console.error("CHAT_ERROR:", err);
@@ -54,17 +61,8 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ВАЖНО: чтобы Express понимал JSON
-app.use(express.json({ limit: "2mb" }));
-
-app.post("/sendpulse/webhook", async (req, res) => {
-  console.log("SENDPULSE WEBHOOK HEADERS:", req.headers);
-  console.log("SENDPULSE WEBHOOK BODY:", JSON.stringify(req.body, null, 2));
-
-  // пока просто отвечаем 200, чтобы SendPulse не ругался
-  res.json({ ok: true });
-});
-
+// ---------- START SERVER ----------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("Server listening on " + PORT);
+  console.log("Server listening on", PORT);
 });
