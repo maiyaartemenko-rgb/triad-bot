@@ -3,6 +3,7 @@ import { triadChat } from "../triad/triad-openai.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
+import { checkAndConsumeQuota, ensureUserRecord } from "../access/access-store.js";
 
 // SendPulse присылает массив событий. Берём первое.
 function getEvent(payload) {
@@ -134,7 +135,26 @@ export async function handleSendpulseWebhook(req, res) {
     // парсим партнёра из текста
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
+// ...внутри handleSendpulseWebhook после того как получили contactId:
+ensureUserRecord(contactId); // создаст триал, если юзера нет
 
+// Проверка лимитов перед ответом
+const gate = checkAndConsumeQuota(contactId);
+if (!gate.ok) {
+  // триал закончился или дневной лимит исчерпан
+  await sendpulseTelegramSendText({
+    contactId,
+    text: [
+      "⛔ Дневной лимит вопросов исчерпан.",
+      "Оформи доступ, чтобы продолжить:",
+      "• 999 ₽ — 3 вопроса в день",
+      "• 2999 ₽ — безлимит",
+      "",
+      "Нажми кнопку оплаты в боте (или напиши «Оплата»)."
+    ].join("\n")
+  });
+  return;
+}
     const result = await triadChat({
       userText: text,
       profile,
