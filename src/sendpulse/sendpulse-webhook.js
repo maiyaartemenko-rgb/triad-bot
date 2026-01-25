@@ -7,8 +7,8 @@ import {
   sendpulseTelegramSendButtons
 } from "./sendpulse-api.js";
 
-import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
-import { checkAndConsumeQuota } from "../billing/quota.js"; // ← убедись, что файл есть
+import { getHistory, pushToHistory, clearHistory } from "..src/memory/memory-store.js";
+import { checkAndConsumeQuota } from "../access/access-store.js"; // ← убедись, что файл есть
 
 // ---------- helpers ----------
 function getEvent(payload) {

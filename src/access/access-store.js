@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const FILE = path.resolve(process.cwd(), "data/access.json");
+const FILE = path.resolve("data/access.json");
 
 // { users: { [contactId]: { plan, paid_until, trial_started_at, daily_used, day } } }
 
