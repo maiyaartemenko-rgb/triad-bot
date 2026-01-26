@@ -9,7 +9,7 @@ import {
   getHistory,
   pushToHistory,
   clearHistory,
-} from "../memory/memory-store.js";
+} from "../src/memory/memory-store.js";
 
 import { checkAndConsumeQuota } from "../access/access-store.js";
 
