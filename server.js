@@ -30,10 +30,7 @@ app.get("/debug/access", (req, res) => {
   }
 });
 
-// ---------- HEALTH ----------
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
+
 
 // ---------- SENDPULSE WEBHOOK ----------
 app.post(
@@ -48,6 +45,11 @@ app.post(
   express.json({ limit: "2mb" }),
   handleTributeWebhook
 );
+
+// ---------- HEALTH ----------
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
 
 // ---------- TEST ACTIVATE (для проверки без Tribute) ----------
 app.get("/test/activate", testActivate);
