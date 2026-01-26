@@ -163,7 +163,23 @@ export async function handleSendpulseWebhook(req, res) {
 
     // ✅ 3) проверка лимитов ПЕРЕД GPT
     const gate = checkAndConsumeQuota(contactId);
-    if (!gate.ok) {
+// 💾 синхронизируем 5 переменных в SendPulse
+try {
+  await sendpulseSetContactVariables({
+    contactId,
+    variables: {
+      plan: gate.plan || "",          // trial / basic / unlimited / ""
+      daily_used: String((gate.left === Infinity) ? 0 : (3 - gate.left)), // грубо, если нужно
+      day: new Date().toISOString().slice(0, 10),
+      trial_started_at: "",           // если хочешь — бери из access-store (см. ниже)
+      paid_until: ""                  // если хочешь — бери из access-store (см. ниже)
+    }
+  });
+} catch (e) {
+  console.error("SENDPULSE_SET_VARS_ERROR:", e?.message || e);
+}
+    
+if (!gate.ok) {
       await sendPaywall(contactId);
       return;
     }
