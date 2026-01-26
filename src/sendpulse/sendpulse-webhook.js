@@ -98,7 +98,7 @@ async function sendPaywall(contactId) {
     `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
     `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
     "",
-    "Если ссылки не открываются — напиши «Оплата».",
+    "❗ При оплате в поле 'Детали заказа' напиши любое слово или символ.",
   ].join("\n");
 
   await sendpulseTelegramSendText({ contactId, text });
