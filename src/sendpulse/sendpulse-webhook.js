@@ -1,15 +1,11 @@
 // src/sendpulse/sendpulse-webhook.js
-
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 
-import {
-  getHistory,
-  pushToHistory,
-  clearHistory,
-} from "../src/memory/memory-store.js";
+// ✅ обычно так (потому что файл лежит: src/memory/memory-store.js)
+import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
 
 import { checkAndConsumeQuota } from "../access/access-store.js";
 
@@ -27,13 +23,15 @@ function extractText(event) {
 }
 
 function extractContactId(event) {
+  // ✅ самый стабильный ID для платежей/лимитов
   return event?.contact?.id ?? null;
 }
 
 function normalizeMainSignFromVars(vars) {
+  // поддержим разные варианты имени переменной
   const raw = vars?.Animal || vars?.animal || "";
   return String(raw)
-    .replace(/[^\p{L}\s-]/gu, "")
+    .replace(/[^\p{L}\s-]/gu, "") // убираем эмодзи/мусор
     .trim()
     .toUpperCase();
 }
@@ -57,6 +55,7 @@ function parseActiveSigns(vars) {
 }
 
 function decodeHtmlEntities(s = "") {
+  // иногда модель может вернуть &lt;b&gt;
   return String(s)
     .replaceAll("&amp;", "&")
     .replaceAll("&lt;", "<")
@@ -66,22 +65,35 @@ function decodeHtmlEntities(s = "") {
 function getPayLinks() {
   const basic = process.env.TRIBUTE_BASIC_URL || "";
   const unlimited = process.env.TRIBUTE_UNLIMITED_URL || "";
-
   return {
     basic: basic || null,
     unlimited: unlimited || null,
   };
 }
 
-async function sendPaywall(contactId) {
+function buildPaywallText({ gate }) {
+  // gate.reason: "daily_limit" | "trial_ended" | null
+  const isTrialEnded = gate?.reason === "trial_ended";
+
+  const top = isTrialEnded
+    ? "⛔ <b>Бесплатный период завершён.</b>"
+    : "⛔ <b>Дневной лимит вопросов исчерпан.</b>";
+
+  const line2 = isTrialEnded
+    ? "Чтобы продолжить — оформи подписку ниже 👇"
+    : "Завтра снова будут доступны 3 вопроса бесплатно 👇";
+
+  return [top, line2, "", "<b>Доступы:</b>"].join("\n");
+}
+
+async function sendPaywall(contactId, gate) {
   const { basic, unlimited } = getPayLinks();
 
-  // если вдруг забыли переменные — покажем явную ошибку
   if (!basic || !unlimited) {
     await sendpulseTelegramSendText({
       contactId,
       text:
-        "⛔ Дневной лимит вопросов исчерпан.\n\n" +
+        "⛔ Лимит исчерпан.\n\n" +
         "⚠️ Ссылки оплаты не настроены.\n" +
         "Проверь переменные Render:\n" +
         "TRIBUTE_BASIC_URL и TRIBUTE_UNLIMITED_URL",
@@ -89,18 +101,16 @@ async function sendPaywall(contactId) {
     return;
   }
 
-  // Telegram/SendPulse HTML ок: parse_mode="HTML"
+  const header = buildPaywallText({ gate });
+
+  // ✅ В SendPulse Telegram HTML обычно работает (parse_mode: "HTML" у тебя в sendpulse-api)
   const text = [
-    "⛔ <b>Дневной лимит вопросов исчерпан.</b>",
-    "Завтра можно будет снова задать 3 вопроса бесплатно.",
-    "",
-    "<b>Оформи доступ, чтобы продолжить:</b>",
+    header,
     `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
     `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
     "",
-    "❗ При оплате может появиться поле 'Детали заказа'.",
-"Напишите туда любое слово (например: ок).",
-"Это техническое поле, оно ни на что не влияет."
+    "Если при оплате появится поле <b>«Детали заказа»</b> —",
+    "впиши туда любое слово (например: <i>ok</i>). Это техническое поле.",
   ].join("\n");
 
   await sendpulseTelegramSendText({ contactId, text });
@@ -126,11 +136,18 @@ export async function handleSendpulseWebhook(req, res) {
 
     const lower = text.toLowerCase();
 
-    // команды
+    // -------- commands --------
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет!",
+        text:
+          "Привет! 👋\n" +
+          "Задай любой вопрос — я отвечу по твоему профилю.\n\n" +
+          "Примеры:\n" +
+          "• «Опиши мой психологический портрет»\n" +
+          "• «Мой жизненный сценарий»\n" +
+          "• «Моя тень и сильные стороны»\n\n" +
+          "Про отношения лучше так: «Мой муж ДРАКОН…» 😉",
       });
       return;
     }
@@ -144,46 +161,44 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-
-    // Если пользователь пишет "оплата" — показываем ссылки сразу
     if (lower === "оплата" || lower === "/pay") {
-      await sendPaywall(contactId);
+      // показываем оплату без расходования лимита
+      await sendPaywall(contactId, { reason: "trial_ended" });
       return;
     }
 
-    // 1) сохраняем входящее в память
-    pushToHistory(contactId, "user", text);
-
-    // 2) история (последние 10)
-    const history = getHistory(contactId, 10);
-
-    // 3) лимиты ДО GPT
+    // -------- limits BEFORE GPT --------
     const gate = checkAndConsumeQuota(contactId);
     if (!gate.ok) {
-      await sendPaywall(contactId);
+      await sendPaywall(contactId, gate);
       return;
     }
 
-    // профиль из переменных SendPulse (если есть)
+    // -------- memory --------
+    pushToHistory(contactId, "user", text);
+    const history = getHistory(contactId, 10);
+
+    // -------- profile from SendPulse vars --------
     const vars = event?.contact?.variables || {};
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
+
     const profile = {
       main_sign: main_sign || "БАРСУК",
       active_signs,
     };
 
-    // партнёр
+    // -------- partner parsing --------
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
 
-    // GPT
+    // -------- GPT --------
     const result = await triadChat({
       userText: text,
       profile,
       partnerSign,
       history,
-      model: process.env.OPENAI_MODEL || "gpt-5.2",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
     });
 
@@ -197,10 +212,18 @@ export async function handleSendpulseWebhook(req, res) {
       text: out,
     });
 
-    // 4) сохраняем ответ ассистента
     pushToHistory(contactId, "assistant", answer);
 
-    console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);
+    console.log(
+      "quota:",
+      gate.plan,
+      "left:",
+      gate.left,
+      "partnerSign:",
+      partnerSign,
+      "confidence:",
+      parsed?.confidence
+    );
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }

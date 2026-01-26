@@ -16,7 +16,7 @@ function safeLoad() {
     const txt = fs.readFileSync(FILE, "utf8");
     return JSON.parse(txt);
   } catch {
-    return { users: {} }; // { users: { [contactId]: { plan, paid_until, daily_used, day, trial_started_at } } }
+    return { users: {} }; // { users: { [contactId]: { plan, paid_until, daily_used, last_reset_date, trial_started_at } } }
   }
 }
 
@@ -61,40 +61,78 @@ export function ensureUserRecord(contactId) {
   const rec = getAccess(contactId);
   if (rec) return rec;
 
+  // создаём триал при первом обращении
   return setAccess(contactId, {
-    plan: null,
+    plan: null, // null = не оплачен
     trial_started_at: new Date().toISOString(),
     daily_used: 0,
     last_reset_date: todayStr(),
+    paid_until: null,
   });
 }
 
+/**
+ * Возвращает:
+ * ok: true|false
+ * left: сколько осталось сегодня
+ * plan: "trial" | "basic" | "unlimited" | null
+ * reason: null | "daily_limit" | "trial_ended"
+ */
 export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
+  // сбросить счётчик, если новый день
   if (rec.last_reset_date !== dayNow) {
     rec.last_reset_date = dayNow;
     rec.daily_used = 0;
   }
 
+  const trialActive = isTrialActive(rec);
   const limit = planDailyLimit(rec);
 
+  // unlimited
   if (limit === Infinity) {
     setAccess(contactId, rec);
-    return { ok: true, left: Infinity, plan: rec.plan || "trial" };
+    return { ok: true, left: Infinity, plan: rec.plan || "unlimited", reason: null };
   }
 
-  if (rec.daily_used < limit) {
-    rec.daily_used += 1;
+  // если лимит = 0 (например триал кончился и план не куплен)
+  if (limit <= 0) {
     setAccess(contactId, rec);
     return {
-      ok: true,
-      left: limit - rec.daily_used,
-      plan: rec.plan || (isTrialActive(rec) ? "trial" : null),
+      ok: false,
+      left: 0,
+      plan: rec.plan || (trialActive ? "trial" : null),
+      reason: "trial_ended",
     };
   }
 
+  // есть лимит и ещё осталось
+  if (rec.daily_used < limit) {
+    rec.daily_used += 1;
+    setAccess(contactId, rec);
+
+    const planLabel = rec.plan || (trialActive ? "trial" : null);
+
+    return {
+      ok: true,
+      left: limit - rec.daily_used,
+      plan: planLabel,
+      reason: null,
+    };
+  }
+
+  // лимит исчерпан
   setAccess(contactId, rec);
-  return { ok: false, left: 0, plan: rec.plan || (isTrialActive(rec) ? "trial" : null) };
+
+  const planLabel = rec.plan || (trialActive ? "trial" : null);
+
+  // ✅ различаем:
+  // - trialActive=true → завтра снова можно
+  // - trialActive=false и plan=null → триал завершён
+  // - basic тоже завтра можно, но это тоже daily_limit
+  const reason = trialActive || rec.plan ? "daily_limit" : "trial_ended";
+
+  return { ok: false, left: 0, plan: planLabel, reason };
 }
