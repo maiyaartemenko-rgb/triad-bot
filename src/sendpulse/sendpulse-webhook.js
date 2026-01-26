@@ -64,10 +64,13 @@ function decodeHtmlEntities(s = "") {
 }
 
 function getPayLinks() {
-  // Твои готовые ссылки Tribute (можно хранить в переменных Render)
   const basic = process.env.TRIBUTE_BASIC_URL || "";
   const unlimited = process.env.TRIBUTE_UNLIMITED_URL || "";
-  return { basic, unlimited };
+
+  return {
+    basic: basic || null,
+    unlimited: unlimited || null,
+  };
 }
 
 async function sendPaywall(contactId) {
@@ -125,7 +128,7 @@ export async function handleSendpulseWebhook(req, res) {
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет! Напиши вопрос — и я отвечу 🙂",
+        text: "Привет!",
       });
       return;
     }
@@ -138,6 +141,7 @@ export async function handleSendpulseWebhook(req, res) {
       });
       return;
     }
+
 
     // Если пользователь пишет "оплата" — показываем ссылки сразу
     if (lower === "оплата" || lower === "/pay") {
