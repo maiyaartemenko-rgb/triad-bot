@@ -1,15 +1,17 @@
 // src/sendpulse/sendpulse-webhook.js
+
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
-import {
-  sendpulseTelegramSendText,
-  sendpulseTelegramSendButtons, sendpulseSetContactVariables
-} from "./sendpulse-api.js";
+import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 
-import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
-import { checkAndConsumeQuota } from "../access/access-store.js"; // ← убедись, что файл есть
-import { getAccess } from "../access/access-store.js";
+import {
+  getHistory,
+  pushToHistory,
+  clearHistory,
+} from "../memory/memory-store.js";
+
+import { checkAndConsumeQuota } from "../access/access-store.js";
 
 // ---------- helpers ----------
 function getEvent(payload) {
@@ -29,7 +31,7 @@ function extractContactId(event) {
 }
 
 function normalizeMainSignFromVars(vars) {
-  const raw = vars?.Animal || "";
+  const raw = vars?.Animal || vars?.animal || "";
   return String(raw)
     .replace(/[^\p{L}\s-]/gu, "")
     .trim()
@@ -61,67 +63,47 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&gt;", ">");
 }
 
-function buildPayLinks(contactId) {
-  // ✅ ВАЖНО: сюда вставь свои реальные ссылки из Tribute (одна на basic, одна на unlimited)
-  const BASIC_URL = process.env.TRIBUTE_BASIC_URL || "";
-  const UNLIMITED_URL = process.env.TRIBUTE_UNLIMITED_URL || "";
-
-  // если ты хочешь одну и ту же ссылку, а plan различать параметром — можно так:
-  // const BASIC_URL = process.env.TRIBUTE_PAY_URL || "";
-  // const UNLIMITED_URL = process.env.TRIBUTE_PAY_URL || "";
-
-  const basic = BASIC_URL
-    ? `${BASIC_URL}${BASIC_URL.includes("?") ? "&" : "?"}contactId=${encodeURIComponent(
-        contactId
-      )}&plan=basic`
-    : null;
-
-  const unlimited = UNLIMITED_URL
-    ? `${UNLIMITED_URL}${UNLIMITED_URL.includes("?") ? "&" : "?"}contactId=${encodeURIComponent(
-        contactId
-      )}&plan=unlimited`
-    : null;
-
+function getPayLinks() {
+  // Твои готовые ссылки Tribute (можно хранить в переменных Render)
+  const basic = process.env.TRIBUTE_BASIC_URL || "";
+  const unlimited = process.env.TRIBUTE_UNLIMITED_URL || "";
   return { basic, unlimited };
 }
 
 async function sendPaywall(contactId) {
-  const { basic, unlimited } = buildPayLinks(contactId);
+  const { basic, unlimited } = getPayLinks();
 
-  const text = [
-    "⛔ Дневной лимит вопросов исчерпан.",
-    "Завтра можно будет снова задать 3 вопроса бесплатно.",
-    "",
-    "Оформи доступ, чтобы продолжить:",
-    "• 990 ₽ — 3 вопроса в день",
-    "• 2900 ₽ — безлимит",
-  ].join("\n");
-
-  // если кнопки не сконфигурены — хотя бы текстом
+  // если вдруг забыли переменные — покажем явную ошибку
   if (!basic || !unlimited) {
     await sendpulseTelegramSendText({
       contactId,
       text:
-        text +
-        "\n\n⚠️ Ссылки оплаты не настроены. Проверь переменные TRIBUTE_BASIC_URL и TRIBUTE_UNLIMITED_URL.",
+        "⛔ Дневной лимит вопросов исчерпан.\n\n" +
+        "⚠️ Ссылки оплаты не настроены.\n" +
+        "Проверь переменные Render:\n" +
+        "TRIBUTE_BASIC_URL и TRIBUTE_UNLIMITED_URL",
     });
     return;
   }
 
-  // ✅ отправляем кнопки
-  await sendpulseTelegramSendButtons({
-    contactId,
-    text,
-    buttons: [
-      { text: "Оплатить 990 ₽ (3/день)", url: basic },
-      { text: "Оплатить 2900 ₽ (безлимит)", url: unlimited },
-    ],
-  });
+  // Telegram/SendPulse HTML ок: parse_mode="HTML"
+  const text = [
+    "⛔ <b>Дневной лимит вопросов исчерпан.</b>",
+    "Завтра можно будет снова задать 3 вопроса бесплатно.",
+    "",
+    "<b>Оформи доступ, чтобы продолжить:</b>",
+    `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
+    `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
+    "",
+    "Если ссылки не открываются — напиши «Оплата».",
+  ].join("\n");
+
+  await sendpulseTelegramSendText({ contactId, text });
 }
 
 // ---------- main ----------
 export async function handleSendpulseWebhook(req, res) {
-  // всегда быстро отвечаем OK
+  // SendPulse нужно быстрое 200 OK
   res.status(200).json({ ok: true });
 
   try {
@@ -137,8 +119,10 @@ export async function handleSendpulseWebhook(req, res) {
     }
     if (!text) return;
 
-    // ✅ команды
-    if (text.toLowerCase() === "/start") {
+    const lower = text.toLowerCase();
+
+    // команды
+    if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
         text: "Привет! Напиши вопрос — и я отвечу 🙂",
@@ -146,7 +130,7 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    if (text.toLowerCase() === "/reset") {
+    if (lower === "/reset") {
       clearHistory(contactId);
       await sendpulseTelegramSendText({
         contactId,
@@ -155,36 +139,26 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    // ✅ 1) сохраняем входящее в память
-    pushToHistory(contactId, "user", text);
-
-    // ✅ 2) достаем историю (последние 10 сообщений)
-    const history = getHistory(contactId, 10);
-
-    // ✅ 3) проверка лимитов ПЕРЕД GPT
-    const gate = checkAndConsumeQuota(contactId);
-// 💾 синхронизируем 5 переменных в SendPulse
-try {
-  await sendpulseSetContactVariables({
-    contactId,
-    variables: {
-      plan: gate.plan || "",          // trial / basic / unlimited / ""
-      daily_used: String((gate.left === Infinity) ? 0 : (3 - gate.left)), // грубо, если нужно
-      day: new Date().toISOString().slice(0, 10),
-      trial_started_at: "",           // если хочешь — бери из access-store (см. ниже)
-      paid_until: ""                  // если хочешь — бери из access-store (см. ниже)
-    }
-  });
-} catch (e) {
-  console.error("SENDPULSE_SET_VARS_ERROR:", e?.message || e);
-}
-    
-if (!gate.ok) {
+    // Если пользователь пишет "оплата" — показываем ссылки сразу
+    if (lower === "оплата" || lower === "/pay") {
       await sendPaywall(contactId);
       return;
     }
 
-    // профиль
+    // 1) сохраняем входящее в память
+    pushToHistory(contactId, "user", text);
+
+    // 2) история (последние 10)
+    const history = getHistory(contactId, 10);
+
+    // 3) лимиты ДО GPT
+    const gate = checkAndConsumeQuota(contactId);
+    if (!gate.ok) {
+      await sendPaywall(contactId);
+      return;
+    }
+
+    // профиль из переменных SendPulse (если есть)
     const vars = event?.contact?.variables || {};
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
@@ -193,7 +167,7 @@ if (!gate.ok) {
       active_signs,
     };
 
-    // парсим партнёра
+    // партнёр
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
 
@@ -202,7 +176,7 @@ if (!gate.ok) {
       userText: text,
       profile,
       partnerSign,
-      history, // ✅ важно
+      history,
       model: process.env.OPENAI_MODEL || "gpt-5.2",
       temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
     });
@@ -217,22 +191,9 @@ if (!gate.ok) {
       text: out,
     });
 
-    // ✅ 4) сохраняем ответ ассистента
+    // 4) сохраняем ответ ассистента
     pushToHistory(contactId, "assistant", answer);
 
-const rec = getAccess(contactId);
-if (rec) {
-  await sendpulseSetContactVariables({
-    contactId,
-    vars: {
-      plan: rec.plan ?? "",
-      paid_until: rec.paid_until ?? "",
-      trial_started_at: rec.trial_started_at ?? "",
-      daily_used: rec.daily_used ?? "",
-      last_reset_date: rec.last_reset_date ?? rec.day ?? "",
-    },
-  });
-}
     console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
