@@ -4,11 +4,12 @@ import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
 import {
   sendpulseTelegramSendText,
-  sendpulseTelegramSendButtons
+  sendpulseTelegramSendButtons, sendpulseSetContactVariables
 } from "./sendpulse-api.js";
 
 import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
 import { checkAndConsumeQuota } from "../access/access-store.js"; // ← убедись, что файл есть
+import { getAccess } from "../access/access-store.js";
 
 // ---------- helpers ----------
 function getEvent(payload) {
@@ -203,6 +204,19 @@ export async function handleSendpulseWebhook(req, res) {
     // ✅ 4) сохраняем ответ ассистента
     pushToHistory(contactId, "assistant", answer);
 
+const rec = getAccess(contactId);
+if (rec) {
+  await sendpulseSetContactVariables({
+    contactId,
+    vars: {
+      plan: rec.plan ?? "",
+      paid_until: rec.paid_until ?? "",
+      trial_started_at: rec.trial_started_at ?? "",
+      daily_used: rec.daily_used ?? "",
+      last_reset_date: rec.last_reset_date ?? rec.day ?? "",
+    },
+  });
+}
     console.log("partnerSign:", partnerSign, "confidence:", parsed?.confidence);
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);

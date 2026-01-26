@@ -1,4 +1,6 @@
 // src/sendpulse/sendpulse-api.js
+import dotenv from "dotenv";
+dotenv.config();
 
 let cachedToken = null;
 let tokenExpiresAt = 0;
@@ -24,7 +26,7 @@ async function getAccessToken() {
     }),
   });
 
-  const data = await resp.json().catch(() => ({}));
+  const data = await resp.json();
   if (!resp.ok) {
     throw new Error(`SendPulse token error ${resp.status}: ${JSON.stringify(data)}`);
   }
@@ -35,7 +37,7 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-async function sendToSendPulseTelegram(contactId, message) {
+export async function sendpulseTelegramSendText({ contactId, text }) {
   const token = await getAccessToken();
 
   const resp = await fetch("https://api.sendpulse.com/telegram/contacts/send", {
@@ -46,7 +48,11 @@ async function sendToSendPulseTelegram(contactId, message) {
     },
     body: JSON.stringify({
       contact_id: String(contactId),
-      message,
+      message: {
+        type: "text",
+        text: String(text || ""),
+        parse_mode: "HTML",
+      },
     }),
   });
 
@@ -58,53 +64,35 @@ async function sendToSendPulseTelegram(contactId, message) {
   return data;
 }
 
-export async function sendpulseTelegramSendText({ contactId, text }) {
-  return sendToSendPulseTelegram(contactId, {
-    type: "text",
-    text: String(text ?? ""),
-    parse_mode: "HTML",
-  });
-}
-
 /**
- * Отправка текста + кнопок (URL)
- * ВАЖНО: у SendPulse формат кнопок может называться по-разному в разных каналах.
- * Поэтому мы:
- * 1) кладём кнопки в message.buttons (часто работает)
- * 2) дублируем ссылки в тексте (фолбэк — даже если кнопки не отрисуются)
+ * Обновляет переменные контакта в SendPulse
+ * vars = { plan, paid_until, trial_started_at, daily_used, last_reset_date }
  */
-export async function sendpulseTelegramSendButtons({
-  contactId,
-  text,
-  buttons = [], // [{ text: "Оплатить", url: "https://..." }, ...]
-}) {
-  const safeButtons = Array.isArray(buttons) ? buttons.filter(b => b?.text && b?.url) : [];
+export async function sendpulseSetContactVariables({ contactId, vars }) {
+  const token = await getAccessToken();
 
-  const fallbackLinks =
-    safeButtons.length
-      ? "\n\n" +
-        safeButtons
-          .map((b) => `• <a href="${String(b.url)}">${String(b.text)}</a>`)
-          .join("\n")
-      : "";
+  // В SendPulse обычно ждут массив переменных вида [{name, value}]
+  const variables = Object.entries(vars || {}).map(([name, value]) => ({
+    name,
+    value: value === null || value === undefined ? "" : String(value),
+  }));
 
-  const finalText = String(text ?? "") + fallbackLinks;
-
-  return sendToSendPulseTelegram(contactId, {
-    type: "text",
-    text: finalText,
-    parse_mode: "HTML",
-
-    // попытка №1 (часто работает)
-    buttons: safeButtons.map((b) => ({
-      type: "url",
-      text: String(b.text),
-      url: String(b.url),
-    })),
-
-    // попытка №2 (на всякий случай — некоторые реализации любят "keyboard")
-    keyboard: safeButtons.map((b) => ([
-      { type: "url", text: String(b.text), url: String(b.url) }
-    ])),
+  const resp = await fetch("https://api.sendpulse.com/telegram/contacts/setVariables", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      contact_id: String(contactId),
+      variables,
+    }),
   });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(`SendPulse setVariables error ${resp.status}: ${JSON.stringify(data)}`);
+  }
+
+  return data;
 }

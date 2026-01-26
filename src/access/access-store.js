@@ -65,7 +65,7 @@ export function ensureUserRecord(contactId) {
     plan: null,
     trial_started_at: new Date().toISOString(),
     daily_used: 0,
-    day: todayStr(),
+    last_reset_date: todayStr(),
   });
 }
 
@@ -73,8 +73,8 @@ export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
-  if (rec.day !== dayNow) {
-    rec.day = dayNow;
+  if (rec.last_reset_date !== dayNow) {
+    rec.last_reset_date = dayNow;
     rec.daily_used = 0;
   }
 
