@@ -1,11 +1,12 @@
 // src/sendpulse/sendpulse-webhook.js
+
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
 
-// ✅ обычно так (потому что файл лежит: src/memory/memory-store.js)
-import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
+// ✅ правильный путь (файл: src/memory/memory-store.js)
+import { getHistory, pushToHistory, clearHistory } from "../memory/memory-store.js";
 
 import { checkAndConsumeQuota } from "../access/access-store.js";
 
@@ -62,17 +63,9 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&gt;", ">");
 }
 
-function getPayLinks() {
-  const basic = process.env.TRIBUTE_BASIC_URL || "";
-  const unlimited = process.env.TRIBUTE_UNLIMITED_URL || "";
-  return {
-    basic: basic || null,
-    unlimited: unlimited || null,
-  };
-}
-
+// ---------- PAYWALL ----------
 function buildPaywallText({ gate }) {
-  // gate.reason: "daily_limit" | "trial_ended" | null
+  // gate.reason может прийти (если ты добавишь позже). Пока поддержим и без него.
   const isTrialEnded = gate?.reason === "trial_ended";
 
   const top = isTrialEnded
@@ -86,9 +79,32 @@ function buildPaywallText({ gate }) {
   return [top, line2, "", "<b>Доступы:</b>"].join("\n");
 }
 
-async function sendPaywall(contactId, gate) {
-  const { basic, unlimited } = getPayLinks();
+function getPayLinks(contactId) {
+  const basicBase = process.env.TRIBUTE_BASIC_URL || "";
+  const unlimitedBase = process.env.TRIBUTE_UNLIMITED_URL || "";
 
+  if (!basicBase || !unlimitedBase) {
+    return { basic: null, unlimited: null };
+  }
+
+  // Вшиваем contactId в startapp, чтобы Tribute вернул его в webhook
+  function withContactId(url) {
+    return url.replace(
+      /startapp=([^&]+)/,
+      (m, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
+    );
+  }
+
+  return {
+    basic: withContactId(basicBase),
+    unlimited: withContactId(unlimitedBase),
+  };
+}
+
+async function sendPaywall(contactId, gate) {
+  const { basic, unlimited } = getPayLinks(contactId);
+
+  // если вдруг забыли переменные — покажем явную ошибку
   if (!basic || !unlimited) {
     await sendpulseTelegramSendText({
       contactId,
@@ -103,14 +119,14 @@ async function sendPaywall(contactId, gate) {
 
   const header = buildPaywallText({ gate });
 
-  // ✅ В SendPulse Telegram HTML обычно работает (parse_mode: "HTML" у тебя в sendpulse-api)
+  // ✅ HTML (parse_mode у тебя включён в sendpulse-api)
   const text = [
     header,
     `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
     `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
     "",
-    "Если при оплате появится поле <b>«Детали заказа»</b> —",
-    "впиши туда любое слово (например: <i>ok</i>). Это техническое поле.",
+    "❗ Если при оплате появится поле <b>«Детали заказа»</b> —",
+    "впиши туда любое слово (например: <i>ок</i>). Это техническое поле.",
   ].join("\n");
 
   await sendpulseTelegramSendText({ contactId, text });
@@ -140,14 +156,7 @@ export async function handleSendpulseWebhook(req, res) {
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text:
-          "Привет! 👋\n" +
-          "Задай любой вопрос — я отвечу по твоему профилю.\n\n" +
-          "Примеры:\n" +
-          "• «Опиши мой психологический портрет»\n" +
-          "• «Мой жизненный сценарий»\n" +
-          "• «Моя тень и сильные стороны»\n\n" +
-          "Про отношения лучше так: «Мой муж ДРАКОН…» 😉",
+        text: "Привет! Напиши вопрос — и я отвечу 🙂",
       });
       return;
     }
@@ -161,8 +170,8 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
+    // "оплата" — показываем ссылки без расхода лимита
     if (lower === "оплата" || lower === "/pay") {
-      // показываем оплату без расходования лимита
       await sendPaywall(contactId, { reason: "trial_ended" });
       return;
     }
@@ -228,3 +237,4 @@ export async function handleSendpulseWebhook(req, res) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
 }
+
