@@ -31,75 +31,23 @@ function normalizePlan(p) {
   return null;
 }
 
-// base64url (только [A-Za-z0-9_-])
-function b64urlEncode(str) {
-  return Buffer.from(String(str), "utf8")
-    .toString("base64")
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-function b64urlDecode(str) {
-  try {
-    let s = String(str || "").replaceAll("-", "+").replaceAll("_", "/");
-    // pad
-    while (s.length % 4 !== 0) s += "=";
-    return Buffer.from(s, "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Пытаемся вытащить contactId из startapp:
- * 1) sMoF__cid__ENC
- * 2) sMoFcidENC
- * где ENC = b64url(contactId) или иногда прямо contactId
- */
-function parseCidFromStartapp(startapp = "") {
-  const s = String(startapp || "");
-
-  // вариант 1: __cid__XXXX
-  let m = s.match(/__cid__([A-Za-z0-9_-]{6,})/);
-  if (m) {
-    const raw = m[1];
-    return b64urlDecode(raw) || raw;
-  }
-
-  // вариант 2: cidXXXX
-  m = s.match(/cid([A-Za-z0-9_-]{6,})/);
-  if (m) {
-    const raw = m[1];
-    return b64urlDecode(raw) || raw;
-  }
-
-  return null;
-}
-
-// Определяем план по startapp-коду
+// sMoF = unlimited, sMoE = basic (как ты сказала)
 function planFromStartapp(startapp = "") {
   const s = String(startapp || "");
-  if (s.includes("sMoE")) return "basic";
   if (s.includes("sMoF")) return "unlimited";
+  if (s.includes("sMoE")) return "basic";
   return null;
 }
 
-/**
- * Делаем безопасный startapp: только буквы/цифры/подчёркивание/дефис.
- * Вшиваем contactId в виде base64url, чтобы ничего не сломалось:
- * startapp=sMoFcidENCODED
- */
-function withContactIdInStartapp(url, contactId) {
-  const cid = String(contactId || "").trim();
-  if (!cid) return String(url);
-
-  const encodedCid = b64urlEncode(cid);
-
-  return String(url).replace(/startapp=([^&]+)/, (_, code) => {
-    const safeCode = String(code).replace(/[^a-zA-Z0-9_]/g, "");
-    return `startapp=${safeCode}cid${encodedCid}`;
-  });
+// иногда Tribute присылает web_app_link: https://t.me/tribute/app?startapp=XXXX
+function extractStartappValue(maybeUrlOrCode = "") {
+  const s = String(maybeUrlOrCode || "").trim();
+  if (!s) return "";
+  if (s.includes("startapp=")) {
+    const m = s.match(/startapp=([^&\s]+)/);
+    return m ? m[1] : "";
+  }
+  return s; // уже код
 }
 
 function requireCid(req, res) {
@@ -112,6 +60,9 @@ function requireCid(req, res) {
 }
 
 // ---------- PAY REDIRECTS (Tribute) ----------
+// ВАЖНО: НЕ меняем startapp вообще.
+// Просто редиректим на TRIBUTE_*_URL как есть.
+// (cid нужен только чтобы ссылку строить в paywall, но Tribute его не использует)
 app.get("/pay/basic", (req, res) => {
   const cid = requireCid(req, res);
   if (!cid) return;
@@ -119,11 +70,7 @@ app.get("/pay/basic", (req, res) => {
   const base = String(process.env.TRIBUTE_BASIC_URL || "").trim();
   if (!base) return res.status(500).send("TRIBUTE_BASIC_URL is not set");
 
-  const link = withContactIdInStartapp(base, cid);
-
-  // более “железный” редирект
-  res.status(302);
-  res.setHeader("Location", link);
+  res.status(302).setHeader("Location", base);
   return res.end();
 });
 
@@ -134,10 +81,7 @@ app.get("/pay/unlimited", (req, res) => {
   const base = String(process.env.TRIBUTE_UNLIMITED_URL || "").trim();
   if (!base) return res.status(500).send("TRIBUTE_UNLIMITED_URL is not set");
 
-  const link = withContactIdInStartapp(base, cid);
-
-  res.status(302);
-  res.setHeader("Location", link);
+  res.status(302).setHeader("Location", base);
   return res.end();
 });
 
@@ -172,28 +116,36 @@ async function tributeWebhook(req, res) {
     console.log("TRIBUTE_WEBHOOK_QUERY:", q);
     console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
 
-    const startapp =
+    // 1) startapp / web_app_link достаём откуда угодно
+    const rawStartapp =
       q.startapp ||
       b.startapp ||
       b.startApp ||
       b?.payload?.startapp ||
       b?.payload?.web_app_link ||
+      b?.web_app_link ||
+      b?.payload?.webAppLink ||
       b?.telegram?.startapp ||
       b?.context?.startapp ||
+      b?.details ||
       b?.order?.details ||
       b?.order?.comment ||
-      b?.details ||
       "";
 
+    const startapp = extractStartappValue(rawStartapp);
+
+    // 2) plan
     const plan =
       normalizePlan(q.plan) ||
       normalizePlan(b.plan) ||
       normalizePlan(b?.payload?.plan) ||
       normalizePlan(b?.payload?.subscription_name) ||
+      normalizePlan(b?.payload?.subscriptionName) ||
       normalizePlan(b?.subscription?.plan) ||
       normalizePlan(b?.product?.type) ||
       planFromStartapp(startapp);
 
+    // 3) contactId: если вдруг Tribute когда-то начнёт присылать — подхватим
     let contactId = String(
       q.contactId ||
         q.contact_id ||
@@ -201,16 +153,18 @@ async function tributeWebhook(req, res) {
         b.contactId ||
         b.contact_id ||
         b.cid ||
-        parseCidFromStartapp(startapp) ||
         ""
     ).trim();
 
+    // 4) иначе — главный путь: telegram_user_id -> tg-map-store
     if (!contactId) {
       const tgId =
         b?.payload?.telegram_user_id ||
         b?.telegram_user_id ||
         b?.payload?.user?.telegram_user_id ||
+        b?.payload?.user_id ||
         b?.payload?.user?.id ||
+        b?.user_id ||
         null;
 
       if (tgId) {
@@ -222,11 +176,19 @@ async function tributeWebhook(req, res) {
       return res.status(400).json({
         ok: false,
         error: "need contactId & plan",
-        got: { contactId: contactId || null, plan: plan || null, startapp },
+        got: {
+          contactId: contactId || null,
+          plan: plan || null,
+          startapp: startapp || null,
+        },
       });
     }
 
-    const paid_until = b?.payload?.expires_at || b?.expires_at || addDaysISO(30);
+    // 5) paid_until: берём expires_at от Tribute, иначе +30 дней
+    const paid_until =
+      b?.payload?.expires_at ||
+      b?.expires_at ||
+      addDaysISO(30);
 
     setAccess(contactId, {
       plan,
