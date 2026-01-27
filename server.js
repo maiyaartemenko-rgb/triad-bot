@@ -130,6 +130,13 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+app.all("/tribute/webhook", express.json({ limit: "2mb" }), (req, res) => {
+  console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
+  console.log("TRIBUTE_WEBHOOK_HEADERS:", req.headers);
+  console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(req.body, null, 2));
+  res.status(200).json({ ok: true });
+});
+
 // ---------- START SERVER ----------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
