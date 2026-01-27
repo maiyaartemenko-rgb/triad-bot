@@ -107,16 +107,55 @@ app.get("/debug/access", (req, res) => {
 app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
 // ---------- TRIBUTE WEBHOOK ----------
-async function tributeWebhook(req, res) {
+// ---------- TRIBUTE WEBHOOK (ROBUST) ----------
+
+// отдельные парсеры ТОЛЬКО для webhook,
+// чтобы принять любой формат, который шлёт Tribute
+const tributeBodyParsers = [
+  express.json({
+    limit: "2mb",
+    type: ["application/json", "application/*+json"],
+  }),
+  express.urlencoded({ extended: true }),
+  express.text({ type: "*/*", limit: "2mb" }), // fallback: если пришёл text/plain или непонятный content-type
+];
+
+function safeJsonParseMaybe(str) {
   try {
+    return JSON.parse(str);
+  } catch {
+    return null;
+  }
+}
+
+async function tributeWebhook(req, res) {
+  // Tribute обычно ждёт 200 быстро
+  // (но мы всё равно успеем обработать — тут логика лёгкая)
+  try {
+    const headers = req.headers || {};
     const q = req.query || {};
-    const b = req.body || {};
 
-    console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
-    console.log("TRIBUTE_WEBHOOK_QUERY:", q);
-    console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
+    // body может быть объектом (после json/urlencoded) или строкой (после text)
+    let b = req.body;
 
-    // 1) startapp / web_app_link достаём откуда угодно
+    // если пришла строка — попробуем распарсить JSON
+    if (typeof b === "string") {
+      const parsed = safeJsonParseMaybe(b);
+      if (parsed) b = parsed;
+    }
+
+    if (!b || typeof b !== "object") b = {};
+
+    console.log("========== TRIBUTE WEBHOOK ==========");
+    console.log("METHOD:", req.method);
+    console.log("HEADERS:", headers);
+    console.log("QUERY:", q);
+    console.log("BODY_TYPE:", typeof req.body);
+    console.log("BODY_RAW:", typeof req.body === "string" ? req.body : null);
+    console.log("BODY_JSON:", JSON.stringify(b, null, 2));
+    console.log("=====================================");
+
+    // 1) startapp/web_app_link (если есть)
     const rawStartapp =
       q.startapp ||
       b.startapp ||
@@ -124,28 +163,19 @@ async function tributeWebhook(req, res) {
       b?.payload?.startapp ||
       b?.payload?.web_app_link ||
       b?.web_app_link ||
-      b?.payload?.webAppLink ||
-      b?.telegram?.startapp ||
-      b?.context?.startapp ||
-      b?.details ||
-      b?.order?.details ||
-      b?.order?.comment ||
       "";
 
-    const startapp = extractStartappValue(rawStartapp);
+    const startapp = String(rawStartapp || "").trim();
 
-    // 2) plan
+    // 2) plan: sMoF=unlimited, sMoE=basic + нормализация по названию
     const plan =
       normalizePlan(q.plan) ||
       normalizePlan(b.plan) ||
       normalizePlan(b?.payload?.plan) ||
       normalizePlan(b?.payload?.subscription_name) ||
-      normalizePlan(b?.payload?.subscriptionName) ||
-      normalizePlan(b?.subscription?.plan) ||
-      normalizePlan(b?.product?.type) ||
       planFromStartapp(startapp);
 
-    // 3) contactId: если вдруг Tribute когда-то начнёт присылать — подхватим
+    // 3) contactId: почти всегда НЕ приходит от Tribute => берём tgId
     let contactId = String(
       q.contactId ||
         q.contact_id ||
@@ -156,39 +186,44 @@ async function tributeWebhook(req, res) {
         ""
     ).trim();
 
-    // 4) иначе — главный путь: telegram_user_id -> tg-map-store
+    // 4) tgId -> contactId (главный сценарий)
     if (!contactId) {
       const tgId =
         b?.payload?.telegram_user_id ||
         b?.telegram_user_id ||
         b?.payload?.user?.telegram_user_id ||
-        b?.payload?.user_id ||
         b?.payload?.user?.id ||
+        b?.payload?.user_id ||
         b?.user_id ||
         null;
 
       if (tgId) {
         contactId = String(getContactIdByTgId(String(tgId)) || "").trim();
+        console.log("tgId -> contactId:", tgId, "->", contactId || "(not found)");
       }
     }
 
-    if (!contactId || !plan) {
-      return res.status(400).json({
+    if (!contactId) {
+      // ВАЖНО: это частая причина "оплатил, но доступа нет":
+      // пользователь НЕ писал боту до оплаты => tg-map пустой.
+      return res.status(200).json({
         ok: false,
-        error: "need contactId & plan",
-        got: {
-          contactId: contactId || null,
-          plan: plan || null,
-          startapp: startapp || null,
-        },
+        error: "contactId_not_found",
+        hint:
+          "User must message the bot at least once before paying (to save tgId->contactId mapping).",
       });
     }
 
-    // 5) paid_until: берём expires_at от Tribute, иначе +30 дней
-    const paid_until =
-      b?.payload?.expires_at ||
-      b?.expires_at ||
-      addDaysISO(30);
+    if (!plan) {
+      return res.status(200).json({
+        ok: false,
+        error: "plan_not_detected",
+        got: { startapp, subscription_name: b?.payload?.subscription_name || null },
+      });
+    }
+
+    // 5) paid_until
+    const paid_until = b?.payload?.expires_at || b?.expires_at || addDaysISO(30);
 
     setAccess(contactId, {
       plan,
@@ -197,15 +232,17 @@ async function tributeWebhook(req, res) {
       last_reset_date: new Date().toISOString().slice(0, 10),
     });
 
-    return res.json({ ok: true, contactId, plan, paid_until });
+    return res.status(200).json({ ok: true, contactId, plan, paid_until });
   } catch (e) {
     console.error("TRIBUTE_WEBHOOK_ERROR:", e);
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    // даже при ошибке лучше вернуть 200, чтобы Tribute не долбил ретраями бесконечно
+    return res.status(200).json({ ok: false, error: String(e?.message || e) });
   }
 }
 
-app.post("/tribute/webhook", tributeWebhook);
-app.get("/tribute/webhook", tributeWebhook);
+// принимаем ВСЁ: GET/POST и любой content-type
+app.all("/tribute/webhook", tributeBodyParsers, tributeWebhook);
+
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
