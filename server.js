@@ -116,11 +116,13 @@ app.post("/tribute/webhook", (req, res) => {
 }
 
 // внутри обработчика:
-const paid_until = addDaysISO(30);
+const paidUntil = new Date(
+  Date.now() + 30 * 24 * 60 * 60 * 1000
+).toISOString();
 
 setAccess(contactId, {
   plan,                 // "basic" | "unlimited"
-  paid_until,           // ✅ всегда на месяц
+  paid_until: paidUntil,           // ✅ всегда на месяц
   daily_used: 0,
   last_reset_date: new Date().toISOString().slice(0,10),
 });
