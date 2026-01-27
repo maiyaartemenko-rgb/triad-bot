@@ -4,6 +4,7 @@ import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
+import { setTgMap } from "../access/tg-map-store.js";
 
 // ✅ правильный путь (файл: src/memory/memory-store.js)
 import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
@@ -61,6 +62,14 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&amp;", "&")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">");
+}
+function extractTelegramUserId(event) {
+  return (
+    event?.info?.message?.channel_data?.message?.from?.id ??
+    event?.info?.message?.channel_data?.from?.id ??
+    event?.contact?.telegram_user_id ??
+    null
+  );
 }
 
 // ---------- PAYWALL ----------
@@ -143,6 +152,9 @@ export async function handleSendpulseWebhook(req, res) {
   // SendPulse нужно быстрое 200 OK
   res.status(200).json({ ok: true });
 
+const tgId = extractTelegramUserId(event);
+
+if (tgId) setTgMap(tgId, contactId);
   try {
     const event = getEvent(req.body);
     if (event?.title !== "incoming_message") return;

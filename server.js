@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
 import { setAccess } from "./src/access/access-store.js";
+import { getContactIdByTgId } from "./src/access/tg-map-store.js";
 
 dotenv.config();
 
@@ -165,7 +166,10 @@ async function tributeWebhook(req, res) {
     }
 
     // 4) подписка на 30 дней для basic и unlimited
-    const paid_until = addDaysISO(30);
+   const paid_until =
+  body?.payload?.expires_at ||
+  body?.expires_at ||
+  addDaysISO(30);
 
     setAccess(contactId, {
       plan,
@@ -184,6 +188,19 @@ async function tributeWebhook(req, res) {
 // принимаем и POST, и GET (на случай тестов)
 app.post("/tribute/webhook", tributeWebhook);
 app.get("/tribute/webhook", tributeWebhook);
+
+// если contactId не нашли через startapp/детали
+if (!contactId) {
+  const tgId =
+    body?.payload?.telegram_user_id ||
+    body?.telegram_user_id ||
+    body?.payload?.user?.telegram_user_id ||
+    null;
+
+  if (tgId) {
+    contactId = getContactIdByTgId(tgId) || "";
+  }
+}
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
