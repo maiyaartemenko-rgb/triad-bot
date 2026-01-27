@@ -12,18 +12,17 @@ dotenv.config();
 const app = express();
 
 // ---------- MIDDLEWARE ----------
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- PAY REDIRECTS (Tribute) ---
-// Требуются env:
-// PUBLIC_BASE_URL (не обязателен, только для ссылок)
+// env:
+// PUBLIC_BASE_URL (не обязателен)
 // TRIBUTE_BASIC_URL
 // TRIBUTE_UNLIMITED_URL
 
 function withContactIdInStartapp(url, contactId) {
-  // Вшиваем contactId в startapp: startapp=CODE__cid__CONTACT_ID
-  // Tribute это сохранит в "детали заказа"/контекст и мы сможем достать в webhook
+  // startapp=CODE__cid__CONTACT_ID
   return String(url).replace(
     /startapp=([^&]+)/,
     (_, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
@@ -67,17 +66,15 @@ app.get("/debug/access", (req, res) => {
       return res.json({
         ok: true,
         users: {},
-        note: "access.json ещё не создан — появится после первого вопроса"
+        note: "access.json ещё не создан — появится после первого вопроса",
       });
     }
-
     const txt = fs.readFileSync("/data/access.json", "utf8");
     res.type("json").send(txt);
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
-
 
 
 // ---------- SENDPULSE WEBHOOK ----------
@@ -88,46 +85,88 @@ app.post(
 );
 
 // ---------- TRIBUTE WEBHOOK ----------
-app.post("/tribute/webhook", (req, res) => {
-  console.log("TRIBUTE_WEBHOOK_BODY:", req.body);
-  console.log("TRIBUTE_WEBHOOK_QUERY:", req.query);
-
-  const contactId =
-    req.body?.contactId ||
-    req.body?.contact_id ||
-    req.query?.contactId ||
-    req.query?.contact_id;
-
-  const planRaw = req.body?.plan || req.query?.plan;
-  const plan = String(planRaw || "").toLowerCase();
-
-  if (!contactId || !plan) {
-    return res.status(400).json({ ok: false, error: "need contactId & plan" });
-  }
-
-  if (!["basic", "unlimited"].includes(plan)) {
-    return res.status(400).json({ ok: false, error: "bad plan", plan });
-  }
-
-  function addDaysISO(days) {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString();
+function addDaysISO(days) {
+  const ms = Date.now() + days * 24 * 60 * 60 * 1000;
+  return new Date(ms).toISOString();
 }
 
-// внутри обработчика:
-const paidUntil = new Date(
-  Date.now() + 30 * 24 * 60 * 60 * 1000
-).toISOString();
+function parseCidFromStartapp(startapp) {
+  // ожидаем ...__cid__CONTACTID
+  const s = String(startapp || "");
+  const m = s.match(/__cid__([^&\s]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
-setAccess(contactId, {
-  plan,                 // "basic" | "unlimited"
-  paid_until: paidUntil,           // ✅ всегда на месяц
-  daily_used: 0,
-  last_reset_date: new Date().toISOString().slice(0,10),
+function normalizePlan(p) {
+  const x = String(p || "").toLowerCase().trim();
+  if (x.includes("unlimit")) return "unlimited";
+  if (x.includes("basic")) return "basic";
+  // если у тебя в Tribute названия другие — подгони тут
+  return null;
+}
+
+app.post("/tribute/webhook", (req, res) => {
+  try {
+    // 1) Берём откуда угодно: body / query
+    const body = req.body || {};
+    const q = req.query || {};
+
+    // 2) plan
+    const plan =
+      normalizePlan(body.plan) ||
+      normalizePlan(q.plan) ||
+      normalizePlan(body?.subscription?.plan) ||
+      normalizePlan(body?.product?.type) ||
+      null;
+
+    // 3) contactId: сначала явный, потом пробуем вытащить из startapp
+    let contactId = String(body.contactId || body.contact_id || q.contactId || q.contact_id || "").trim();
+
+    // попробуем вытащить из startapp/контекста/деталей заказа
+    if (!contactId) {
+      const startapp =
+        body.startapp ||
+        body.startApp ||
+        body?.telegram?.startapp ||
+        body?.telegram?.startApp ||
+        body?.context?.startapp ||
+        body?.context?.startApp ||
+        body?.order?.details ||
+        body?.order?.comment ||
+        body?.details ||
+        "";
+
+      contactId = parseCidFromStartapp(startapp) || "";
+    }
+
+    if (!contactId || !plan) {
+      return res.status(400).json({
+        ok: false,
+        error: "need contactId & plan",
+        got: { contactId: contactId || null, plan: plan || null },
+      });
+    }
+
+    // 4) ставим подписку на 30 дней для обоих планов
+    const paid_until = addDaysISO(30);
+
+    setAccess(contactId, {
+      plan,
+      paid_until,
+      daily_used: 0,
+      last_reset_date: new Date().toISOString().slice(0, 10),
+    });
+
+    return res.json({ ok: true, contactId, plan, paid_until });
+  } catch (e) {
+    console.error("TRIBUTE_WEBHOOK_ERROR:", e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
-  return res.json({ ok: true, contactId: String(contactId), plan, paid_until: paidUntil });
+// (необязательно) чтобы в браузере не было "Cannot GET"
+app.get("/tribute/webhook", (req, res) => {
+  res.status(200).send("ok");
 });
 
 
