@@ -12,6 +12,7 @@ const app = express();
 
 // ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // --- PAY REDIRECTS (Tribute) ---
 // Требуются env:
