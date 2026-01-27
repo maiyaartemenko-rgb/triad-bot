@@ -80,8 +80,8 @@ function parseCidFromStartapp(startapp = "") {
 // Определяем план по startapp-коду
 function planFromStartapp(startapp = "") {
   const s = String(startapp || "");
-  if (s.includes("sMoF")) return "basic";
-  if (s.includes("sMoE")) return "unlimited";
+  if (s.includes("sMoE")) return "basic";
+  if (s.includes("sMoF")) return "unlimited";
   return null;
 }
 
