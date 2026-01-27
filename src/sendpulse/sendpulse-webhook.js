@@ -33,12 +33,18 @@ function extractContactId(event) {
 }
 
 function extractTelegramUserId(event) {
-  return (
-    event?.info?.message?.channel_data?.message?.from?.id ??
-    event?.info?.message?.channel_data?.from?.id ??
-    event?.contact?.telegram_user_id ??
-    null
-  );
+  const candidates = [
+    event?.info?.message?.channel_data?.message?.from?.id,
+    event?.info?.message?.channel_data?.from?.id,
+    event?.info?.message?.channel_data?.message?.chat?.id,
+    event?.info?.message?.channel_data?.chat?.id,
+    event?.contact?.telegram_user_id,
+    event?.contact?.telegram_id,
+    event?.contact?.external_id,
+  ];
+
+  const v = candidates.find((x) => x !== undefined && x !== null && String(x).trim() !== "");
+  return v ? String(v).trim() : null;
 }
 
 function normalizeMainSignFromVars(vars) {
@@ -196,14 +202,14 @@ export async function handleSendpulseWebhook(req, res) {
         console.error("setTgMap error:", e);
       }
     }
-
+console.log("TG_MAP_SAVE:", { tgId, contactId });
     const lower = text.toLowerCase();
 
     // -------- commands --------
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет! Напиши вопрос — и я отвечу 🙂",
+        text: "Привет!🙂",
       });
       return;
     }

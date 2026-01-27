@@ -102,6 +102,23 @@ app.get("/debug/access", (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
+ app.get("/debug/tg-map", (req, res) => {
+  try {
+    const file = "/data/tg-map.json";
+    if (!fs.existsSync(file)) {
+      return res.json({
+        ok: true,
+        map: {},
+        note: "tg-map.json ещё не создан — появится после первого сообщения в бота",
+      });
+    }
+    const txt = fs.readFileSync(file, "utf8");
+    res.type("json").send(txt);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 
 // ---------- SENDPULSE WEBHOOK ----------
 app.post("/sendpulse/webhook", handleSendpulseWebhook);
