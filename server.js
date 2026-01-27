@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
 import { handleTributeWebhook, testActivate } from "./src/tribute/tribute-webhook.js";
+import { setAccess } from "./src/access/access-store.js";
 
 dotenv.config();
 
@@ -88,7 +89,6 @@ app.post(
 
 // ---------- TRIBUTE WEBHOOK ----------
 app.post("/tribute/webhook", (req, res) => {
-  console.log("TRIBUTE_WEBHOOK_HEADERS:", req.headers);
   console.log("TRIBUTE_WEBHOOK_BODY:", req.body);
   console.log("TRIBUTE_WEBHOOK_QUERY:", req.query);
 
@@ -98,19 +98,32 @@ app.post("/tribute/webhook", (req, res) => {
     req.query?.contactId ||
     req.query?.contact_id;
 
-  const plan =
-    req.body?.plan ||
-    req.query?.plan;
+  const planRaw = req.body?.plan || req.query?.plan;
+  const plan = String(planRaw || "").toLowerCase();
 
   if (!contactId || !plan) {
-    return res.status(400).json({
-      ok: false,
-      error: "need contactId & plan",
-      got: { body: req.body, query: req.query },
-    });
+    return res.status(400).json({ ok: false, error: "need contactId & plan" });
   }
 
-  return res.json({ ok: true, contactId, plan });
+  if (!["basic", "unlimited"].includes(plan)) {
+    return res.status(400).json({ ok: false, error: "bad plan", plan });
+  }
+
+  // ✅ ставим paid_until для basic (30 дней), а unlimited = навсегда
+  const paidUntil =
+    plan === "basic"
+      ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+
+  setAccess(String(contactId), {
+    plan,
+    paid_until: paidUntil,
+    // чтобы человек сразу мог спрашивать после оплаты:
+    daily_used: 0,
+    last_reset_date: new Date().toISOString().slice(0, 10),
+  });
+
+  return res.json({ ok: true, contactId: String(contactId), plan, paid_until: paidUntil });
 });
 
 
