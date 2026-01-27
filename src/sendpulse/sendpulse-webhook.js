@@ -124,15 +124,17 @@ function getPublicBaseUrl(req) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-function getPayLinks(req, contactId) {
-  const base = getPublicBaseUrl(req);
-  if (!base) return { basic: null, unlimited: null };
+function getPayLinks(contactId) {
+  const base =
+    (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "") ||
+    "https://triad-bot-ksxb.onrender.com";
 
   return {
     basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
     unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
   };
 }
+
 
 async function sendPaywall(req, contactId, gate, mode = "auto") {
   const { basic, unlimited } = getPayLinks(req, contactId);
