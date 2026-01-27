@@ -23,22 +23,6 @@ function addDaysISO(days) {
   return d.toISOString();
 }
 
-function parseCidFromStartapp(startapp = "") {
-  const s = String(startapp || "");
-  const m = s.match(/cid([0-9a-f]+)/i);
-  return m ? m[1] : null;
-}
-
-function planFromStartapp(startapp = "") {
-  // ТВОИ коды Tribute:
-  // basic -> sMoF
-  // unlimited -> sMoE
-  const s = String(startapp || "");
-  if (s.includes("sMoF")) return "basic";
-  if (s.includes("sMoE")) return "unlimited";
-  return null;
-}
-
 function normalizePlan(p) {
   const x = String(p || "").toLowerCase().trim();
   if (!x) return null;
@@ -47,20 +31,43 @@ function normalizePlan(p) {
   return null;
 }
 
-// --- PAY REDIRECTS (Tribute) ---
-// env:
-// TRIBUTE_BASIC_URL
-// TRIBUTE_UNLIMITED_URL
+// Пытаемся вытащить contactId из startapp в двух вариантах:
+// 1) sMoF__cid__68f234...
+// 2) sMoFcid68f234...
+function parseCidFromStartapp(startapp = "") {
+  const s = String(startapp || "");
+
+  // вариант 1: __cid__CONTACT
+  let m = s.match(/__cid__([0-9a-f]{8,})/i);
+  if (m) return m[1];
+
+  // вариант 2: cidCONTACT
+  m = s.match(/cid([0-9a-f]{8,})/i);
+  if (m) return m[1];
+
+  return null;
+}
+
+// Определяем план по startapp-коду
+function planFromStartapp(startapp = "") {
+  const s = String(startapp || "");
+  if (s.includes("sMoF")) return "basic";
+  if (s.includes("sMoE")) return "unlimited";
+  return null;
+}
+
+// Делаем безопасный startapp: только буквы/цифры/подчёркивание.
+// Tribute иногда ломается на спецсимволах, поэтому:
+// startapp=sMoFcid68f234....
 function withContactIdInStartapp(url, contactId) {
   const cid = String(contactId || "").trim();
+  if (!cid) return String(url);
 
-  // ВАЖНО: делаем startapp строго буквенно-цифровым:
-  // startapp=sMoFcid68f234...
-  // (разделитель "cid" тоже буквенный)
-  return String(url).replace(
-    /startapp=([^&]+)/,
-    (_, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
-  );
+  return String(url).replace(/startapp=([^&]+)/, (_, code) => {
+    const safeCode = String(code).replace(/[^a-zA-Z0-9_]/g, "");
+    const safeCid = cid.replace(/[^0-9a-f]/gi, "");
+    return `startapp=${safeCode}cid${safeCid}`;
+  });
 }
 
 function requireCid(req, res) {
@@ -72,11 +79,12 @@ function requireCid(req, res) {
   return cid;
 }
 
+// ---------- PAY REDIRECTS (Tribute) ----------
 app.get("/pay/basic", (req, res) => {
   const cid = requireCid(req, res);
   if (!cid) return;
 
-  const base = process.env.TRIBUTE_BASIC_URL;
+  const base = String(process.env.TRIBUTE_BASIC_URL || "").trim();
   if (!base) return res.status(500).send("TRIBUTE_BASIC_URL is not set");
 
   const link = withContactIdInStartapp(base, cid);
@@ -87,7 +95,7 @@ app.get("/pay/unlimited", (req, res) => {
   const cid = requireCid(req, res);
   if (!cid) return;
 
-  const base = process.env.TRIBUTE_UNLIMITED_URL;
+  const base = String(process.env.TRIBUTE_UNLIMITED_URL || "").trim();
   if (!base) return res.status(500).send("TRIBUTE_UNLIMITED_URL is not set");
 
   const link = withContactIdInStartapp(base, cid);
@@ -115,18 +123,17 @@ app.get("/debug/access", (req, res) => {
 // ---------- SENDPULSE WEBHOOK ----------
 app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
-// ---------- TRIBUTE WEBHOOK (ЕДИНСТВЕННЫЙ РОУТ) ----------
+// ---------- TRIBUTE WEBHOOK ----------
 async function tributeWebhook(req, res) {
   try {
     const q = req.query || {};
     const b = req.body || {};
 
-    // логи (оставь, пока тестируешь)
     console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
     console.log("TRIBUTE_WEBHOOK_QUERY:", q);
     console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
 
-    // 1) startapp/web_app_link достаём откуда угодно
+    // 1) startapp/web_app_link — откуда угодно
     const startapp =
       q.startapp ||
       b.startapp ||
@@ -144,12 +151,13 @@ async function tributeWebhook(req, res) {
     const plan =
       normalizePlan(q.plan) ||
       normalizePlan(b.plan) ||
+      normalizePlan(b?.payload?.plan) ||
       normalizePlan(b?.payload?.subscription_name) ||
       normalizePlan(b?.subscription?.plan) ||
       normalizePlan(b?.product?.type) ||
       planFromStartapp(startapp);
 
-    // 3) contactId: query/body/из startapp
+    // 3) contactId: query/body/startapp
     let contactId = String(
       q.contactId ||
         q.contact_id ||
@@ -161,12 +169,13 @@ async function tributeWebhook(req, res) {
         ""
     ).trim();
 
-    // 4) если contactId не нашли — пробуем по telegram_user_id (через tg-map-store)
+    // 4) если contactId не нашли — пробуем через telegram_user_id -> tg-map-store
     if (!contactId) {
       const tgId =
         b?.payload?.telegram_user_id ||
         b?.telegram_user_id ||
         b?.payload?.user?.telegram_user_id ||
+        b?.payload?.user?.id ||
         null;
 
       if (tgId) {
@@ -202,7 +211,6 @@ async function tributeWebhook(req, res) {
   }
 }
 
-// принимаем и POST, и GET (на случай тестов/пингов)
 app.post("/tribute/webhook", tributeWebhook);
 app.get("/tribute/webhook", tributeWebhook);
 

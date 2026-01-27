@@ -124,17 +124,15 @@ function getPublicBaseUrl(req) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-function getPayLinks(contactId) {
-  const base =
-    (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "") ||
-    "https://triad-bot-ksxb.onrender.com";
+function getPayLinks(req, contactId) {
+  const base = getPublicBaseUrl(req);
+  if (!base) return { basic: null, unlimited: null };
 
   return {
     basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
     unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
   };
 }
-
 
 async function sendPaywall(req, contactId, gate, mode = "auto") {
   const { basic, unlimited } = getPayLinks(req, contactId);
@@ -196,7 +194,7 @@ export async function handleSendpulseWebhook(req, res) {
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет!🙂",
+        text: "Привет! Напиши вопрос — и я отвечу 🙂",
       });
       return;
     }
