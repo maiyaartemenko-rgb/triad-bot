@@ -24,10 +24,9 @@ function addDaysISO(days) {
 }
 
 function parseCidFromStartapp(startapp = "") {
-  // ожидаем ...__cid__CONTACT_ID
   const s = String(startapp || "");
-  const m = s.match(/__cid__([^&\s]+)/);
-  return m ? decodeURIComponent(m[1]) : null;
+  const m = s.match(/cid([0-9a-f]+)/i);
+  return m ? m[1] : null;
 }
 
 function planFromStartapp(startapp = "") {
@@ -53,10 +52,14 @@ function normalizePlan(p) {
 // TRIBUTE_BASIC_URL
 // TRIBUTE_UNLIMITED_URL
 function withContactIdInStartapp(url, contactId) {
-  // startapp=CODE__cid__CONTACT_ID
+  const cid = String(contactId || "").trim();
+
+  // ВАЖНО: делаем startapp строго буквенно-цифровым:
+  // startapp=sMoFcid68f234...
+  // (разделитель "cid" тоже буквенный)
   return String(url).replace(
     /startapp=([^&]+)/,
-    (_, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
+    (_, code) => `startapp=${code}cid${cid}`
   );
 }
 
