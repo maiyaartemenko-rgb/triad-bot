@@ -2,18 +2,22 @@
 
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
-
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
+
 import { setTgMap } from "../access/tg-map-store.js";
 
-// ✅ правильный путь (файл: src/memory/memory-store.js)
-import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
+// ✅ путь как у тебя сейчас (оставляю так)
+import {
+  getHistory,
+  pushToHistory,
+  clearHistory,
+} from "../src/memory/memory-store.js";
 
 import { checkAndConsumeQuota } from "../access/access-store.js";
 
 // ---------- helpers ----------
 function getEvent(payload) {
-  return Array.isArray(payload) ? (payload[0] ?? {}) : (payload ?? {});
+  return Array.isArray(payload) ? payload[0] ?? {} : payload ?? {};
 }
 
 function extractText(event) {
@@ -25,15 +29,22 @@ function extractText(event) {
 }
 
 function extractContactId(event) {
-  // ✅ самый стабильный ID для платежей/лимитов
   return event?.contact?.id ?? null;
 }
 
+function extractTelegramUserId(event) {
+  return (
+    event?.info?.message?.channel_data?.message?.from?.id ??
+    event?.info?.message?.channel_data?.from?.id ??
+    event?.contact?.telegram_user_id ??
+    null
+  );
+}
+
 function normalizeMainSignFromVars(vars) {
-  // поддержим разные варианты имени переменной
   const raw = vars?.Animal || vars?.animal || "";
   return String(raw)
-    .replace(/[^\p{L}\s-]/gu, "") // убираем эмодзи/мусор
+    .replace(/[^\p{L}\s-]/gu, "")
     .trim()
     .toUpperCase();
 }
@@ -57,24 +68,22 @@ function parseActiveSigns(vars) {
 }
 
 function decodeHtmlEntities(s = "") {
-  // иногда модель может вернуть &lt;b&gt;
   return String(s)
     .replaceAll("&amp;", "&")
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">");
 }
-function extractTelegramUserId(event) {
-  return (
-    event?.info?.message?.channel_data?.message?.from?.id ??
-    event?.info?.message?.channel_data?.from?.id ??
-    event?.contact?.telegram_user_id ??
-    null
-  );
-}
 
 // ---------- PAYWALL ----------
-function buildPaywallText({ gate }) {
-  const reason = gate?.reason;
+function buildPaywallText({ gate, mode = "auto" }) {
+  // mode:
+  // - "auto" -> по причине из gate
+  // - "manual" -> когда юзер сам просит "оплата"
+  const reason = gate?.reason || null;
+
+  if (mode === "manual") {
+    return ["<b>Выберите доступ:</b>"].join("\n");
+  }
 
   if (reason === "paid_ended") {
     return [
@@ -103,45 +112,49 @@ function buildPaywallText({ gate }) {
   ].join("\n");
 }
 
-function getPayLinks(contactId) {
-  const basicBase = process.env.TRIBUTE_BASIC_URL || "";
-  const unlimitedBase = process.env.TRIBUTE_UNLIMITED_URL || "";
+function getPublicBaseUrl(req) {
+  // если PUBLIC_BASE_URL задан — используем его (лучше)
+  const envBase = String(process.env.PUBLIC_BASE_URL || "").trim();
+  if (envBase) return envBase.replace(/\/$/, "");
 
-  if (!basicBase || !unlimitedBase) return { basic: null, unlimited: null };
-
-  const basic = `${basicBase}${basicBase.includes("?") ? "&" : "?"}cid=${encodeURIComponent(contactId)}&plan=basic`;
-  const unlimited = `${unlimitedBase}${unlimitedBase.includes("?") ? "&" : "?"}cid=${encodeURIComponent(contactId)}&plan=unlimited`;
-
-  return { basic, unlimited };
+  // fallback: строим из запроса (может быть http внутри прокси — поэтому envBase предпочтительнее)
+  const proto = (req.headers["x-forwarded-proto"] || "https").toString();
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  if (!host) return "";
+  return `${proto}://${host}`.replace(/\/$/, "");
 }
 
+function getPayLinks(req, contactId) {
+  const base = getPublicBaseUrl(req);
+  if (!base) return { basic: null, unlimited: null };
 
-async function sendPaywall(contactId, gate) {
-  const { basic, unlimited } = getPayLinks(contactId);
+  return {
+    basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
+    unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
+  };
+}
 
-  // если вдруг забыли переменные — покажем явную ошибку
+async function sendPaywall(req, contactId, gate, mode = "auto") {
+  const { basic, unlimited } = getPayLinks(req, contactId);
+
   if (!basic || !unlimited) {
     await sendpulseTelegramSendText({
       contactId,
       text:
         "⛔ Лимит исчерпан.\n\n" +
         "⚠️ Ссылки оплаты не настроены.\n" +
-        "Проверь переменные Render:\n" +
-        "TRIBUTE_BASIC_URL и TRIBUTE_UNLIMITED_URL",
+        "Проверь переменную Render: PUBLIC_BASE_URL\n" +
+        "и что роуты /pay/basic и /pay/unlimited существуют.",
     });
     return;
   }
 
-  const header = buildPaywallText({ gate });
+  const header = buildPaywallText({ gate, mode });
 
-  // ✅ HTML (parse_mode у тебя включён в sendpulse-api)
   const text = [
     header,
     `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
     `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
-    "",
-    "❗ Если при оплате появится поле <b>«Детали заказа»</b> —",
-    "впиши туда любое слово (например: <i>ок</i>). Это техническое поле.",
   ].join("\n");
 
   await sendpulseTelegramSendText({ contactId, text });
@@ -152,9 +165,6 @@ export async function handleSendpulseWebhook(req, res) {
   // SendPulse нужно быстрое 200 OK
   res.status(200).json({ ok: true });
 
-const tgId = extractTelegramUserId(event);
-
-if (tgId) setTgMap(tgId, contactId);
   try {
     const event = getEvent(req.body);
     if (event?.title !== "incoming_message") return;
@@ -168,13 +178,23 @@ if (tgId) setTgMap(tgId, contactId);
     }
     if (!text) return;
 
+    // сохраняем связку tgId -> contactId (для Tribute, если он присылает только telegram_user_id)
+    const tgId = extractTelegramUserId(event);
+    if (tgId) {
+      try {
+        setTgMap(String(tgId), String(contactId));
+      } catch (e) {
+        console.error("setTgMap error:", e);
+      }
+    }
+
     const lower = text.toLowerCase();
 
     // -------- commands --------
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет! Напиши вопрос — и я отвечу 🙂",
+        text: "Привет!🙂",
       });
       return;
     }
@@ -188,16 +208,16 @@ if (tgId) setTgMap(tgId, contactId);
       return;
     }
 
-    // "оплата" — показываем ссылки без расхода лимита
+    // "оплата" — показываем ссылки без расхода лимита и без “завтра”
     if (lower === "оплата" || lower === "/pay") {
-      await sendPaywall(contactId, { reason: "trial_ended" });
+      await sendPaywall(req, contactId, null, "manual");
       return;
     }
 
     // -------- limits BEFORE GPT --------
     const gate = checkAndConsumeQuota(contactId);
     if (!gate.ok) {
-      await sendPaywall(contactId, gate);
+      await sendPaywall(req, contactId, gate, "auto");
       return;
     }
 
@@ -230,7 +250,8 @@ if (tgId) setTgMap(tgId, contactId);
     });
 
     const answer =
-      result?.answer?.trim() || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
+      result?.answer?.trim() ||
+      "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
 
     const out = decodeHtmlEntities(answer);
 
@@ -246,6 +267,8 @@ if (tgId) setTgMap(tgId, contactId);
       gate.plan,
       "left:",
       gate.left,
+      "reason:",
+      gate.reason,
       "partnerSign:",
       partnerSign,
       "confidence:",
@@ -255,4 +278,3 @@ if (tgId) setTgMap(tgId, contactId);
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
 }
-
