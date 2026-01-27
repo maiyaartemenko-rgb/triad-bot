@@ -31,19 +31,48 @@ function normalizePlan(p) {
   return null;
 }
 
-// Пытаемся вытащить contactId из startapp в двух вариантах:
-// 1) sMoF__cid__68f234...
-// 2) sMoFcid68f234...
+// base64url (только [A-Za-z0-9_-])
+function b64urlEncode(str) {
+  return Buffer.from(String(str), "utf8")
+    .toString("base64")
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function b64urlDecode(str) {
+  try {
+    let s = String(str || "").replaceAll("-", "+").replaceAll("_", "/");
+    // pad
+    while (s.length % 4 !== 0) s += "=";
+    return Buffer.from(s, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Пытаемся вытащить contactId из startapp:
+ * 1) sMoF__cid__ENC
+ * 2) sMoFcidENC
+ * где ENC = b64url(contactId) или иногда прямо contactId
+ */
 function parseCidFromStartapp(startapp = "") {
   const s = String(startapp || "");
 
-  // вариант 1: __cid__CONTACT
-  let m = s.match(/__cid__([0-9a-f]{8,})/i);
-  if (m) return m[1];
+  // вариант 1: __cid__XXXX
+  let m = s.match(/__cid__([A-Za-z0-9_-]{6,})/);
+  if (m) {
+    const raw = m[1];
+    return b64urlDecode(raw) || raw;
+  }
 
-  // вариант 2: cidCONTACT
-  m = s.match(/cid([0-9a-f]{8,})/i);
-  if (m) return m[1];
+  // вариант 2: cidXXXX
+  m = s.match(/cid([A-Za-z0-9_-]{6,})/);
+  if (m) {
+    const raw = m[1];
+    return b64urlDecode(raw) || raw;
+  }
 
   return null;
 }
@@ -56,17 +85,20 @@ function planFromStartapp(startapp = "") {
   return null;
 }
 
-// Делаем безопасный startapp: только буквы/цифры/подчёркивание.
-// Tribute иногда ломается на спецсимволах, поэтому:
-// startapp=sMoFcid68f234....
+/**
+ * Делаем безопасный startapp: только буквы/цифры/подчёркивание/дефис.
+ * Вшиваем contactId в виде base64url, чтобы ничего не сломалось:
+ * startapp=sMoFcidENCODED
+ */
 function withContactIdInStartapp(url, contactId) {
   const cid = String(contactId || "").trim();
   if (!cid) return String(url);
 
+  const encodedCid = b64urlEncode(cid);
+
   return String(url).replace(/startapp=([^&]+)/, (_, code) => {
     const safeCode = String(code).replace(/[^a-zA-Z0-9_]/g, "");
-    const safeCid = cid.replace(/[^0-9a-f]/gi, "");
-    return `startapp=${safeCode}cid${safeCid}`;
+    return `startapp=${safeCode}cid${encodedCid}`;
   });
 }
 
@@ -88,7 +120,11 @@ app.get("/pay/basic", (req, res) => {
   if (!base) return res.status(500).send("TRIBUTE_BASIC_URL is not set");
 
   const link = withContactIdInStartapp(base, cid);
-  return res.redirect(302, link);
+
+  // более “железный” редирект
+  res.status(302);
+  res.setHeader("Location", link);
+  return res.end();
 });
 
 app.get("/pay/unlimited", (req, res) => {
@@ -99,7 +135,10 @@ app.get("/pay/unlimited", (req, res) => {
   if (!base) return res.status(500).send("TRIBUTE_UNLIMITED_URL is not set");
 
   const link = withContactIdInStartapp(base, cid);
-  return res.redirect(302, link);
+
+  res.status(302);
+  res.setHeader("Location", link);
+  return res.end();
 });
 
 // ---------- DEBUG ACCESS ----------
@@ -133,7 +172,6 @@ async function tributeWebhook(req, res) {
     console.log("TRIBUTE_WEBHOOK_QUERY:", q);
     console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
 
-    // 1) startapp/web_app_link — откуда угодно
     const startapp =
       q.startapp ||
       b.startapp ||
@@ -147,7 +185,6 @@ async function tributeWebhook(req, res) {
       b?.details ||
       "";
 
-    // 2) plan
     const plan =
       normalizePlan(q.plan) ||
       normalizePlan(b.plan) ||
@@ -157,7 +194,6 @@ async function tributeWebhook(req, res) {
       normalizePlan(b?.product?.type) ||
       planFromStartapp(startapp);
 
-    // 3) contactId: query/body/startapp
     let contactId = String(
       q.contactId ||
         q.contact_id ||
@@ -169,7 +205,6 @@ async function tributeWebhook(req, res) {
         ""
     ).trim();
 
-    // 4) если contactId не нашли — пробуем через telegram_user_id -> tg-map-store
     if (!contactId) {
       const tgId =
         b?.payload?.telegram_user_id ||
@@ -191,11 +226,7 @@ async function tributeWebhook(req, res) {
       });
     }
 
-    // 5) paid_until: берём expires_at от Tribute, иначе +30 дней
-    const paid_until =
-      b?.payload?.expires_at ||
-      b?.expires_at ||
-      addDaysISO(30);
+    const paid_until = b?.payload?.expires_at || b?.expires_at || addDaysISO(30);
 
     setAccess(contactId, {
       plan,
