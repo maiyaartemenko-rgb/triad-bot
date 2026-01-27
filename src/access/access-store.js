@@ -49,10 +49,21 @@ function isTrialActive(rec) {
   return diffDays < 3; // 3 дня
 }
 
+function isPaidActive(rec) {
+  if (!rec?.plan) return false;
+  if (!rec?.paid_until) return false;
+  return new Date(rec.paid_until).getTime() > Date.now();
+}
+
 function planDailyLimit(rec) {
   if (!rec) return 0;
+
+  // ✅ если plan есть, но подписка истекла — доступа нет
+  if ((rec.plan === "basic" || rec.plan === "unlimited") && !isPaidActive(rec)) return 0;
+
   if (rec.plan === "unlimited") return Infinity;
   if (rec.plan === "basic") return 3;
+
   if (isTrialActive(rec)) return 3;
   return 0;
 }
@@ -82,6 +93,14 @@ export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
+// ✅ авто-сброс истекшей подписки
+if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
+  if (new Date(rec.paid_until).getTime() <= Date.now()) {
+    rec.plan = null;
+    rec.paid_until = null;
+    rec.daily_used = 0;
+  }
+}
   // сбросить счётчик, если новый день
   if (rec.last_reset_date !== dayNow) {
     rec.last_reset_date = dayNow;

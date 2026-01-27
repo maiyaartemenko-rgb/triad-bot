@@ -109,19 +109,21 @@ app.post("/tribute/webhook", (req, res) => {
     return res.status(400).json({ ok: false, error: "bad plan", plan });
   }
 
-  // ✅ ставим paid_until для basic (30 дней), а unlimited = навсегда
-  const paidUntil =
-    plan === "basic"
-      ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-      : null;
+  function addDaysISO(days) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString();
+}
 
-  setAccess(String(contactId), {
-    plan,
-    paid_until: paidUntil,
-    // чтобы человек сразу мог спрашивать после оплаты:
-    daily_used: 0,
-    last_reset_date: new Date().toISOString().slice(0, 10),
-  });
+// внутри обработчика:
+const paid_until = addDaysISO(30);
+
+setAccess(contactId, {
+  plan,                 // "basic" | "unlimited"
+  paid_until,           // ✅ всегда на месяц
+  daily_used: 0,
+  last_reset_date: new Date().toISOString().slice(0,10),
+});
 
   return res.json({ ok: true, contactId: String(contactId), plan, paid_until: paidUntil });
 });
