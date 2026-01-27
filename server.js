@@ -4,7 +4,6 @@ import fs from "node:fs";
 
 import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
-import { handleTributeWebhook, testActivate } from "./src/tribute/tribute-webhook.js";
 import { setAccess } from "./src/access/access-store.js";
 
 dotenv.config();
@@ -12,15 +11,45 @@ dotenv.config();
 const app = express();
 
 // ---------- MIDDLEWARE ----------
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+// ---------- HELPERS ----------
+function addDaysISO(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days || 0));
+  return d.toISOString();
+}
+
+function parseCidFromStartapp(startapp = "") {
+  // ожидаем ...__cid__CONTACT_ID
+  const s = String(startapp || "");
+  const m = s.match(/__cid__([^&\s]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function planFromStartapp(startapp = "") {
+  // ВАЖНО: подставь свои коды startapp от Tribute:
+  // basic -> sMoF
+  // unlimited -> sMoE
+  const s = String(startapp || "");
+  if (s.includes("sMoF")) return "basic";
+  if (s.includes("sMoE")) return "unlimited";
+  return null;
+}
+
+function normalizePlan(p) {
+  const x = String(p || "").toLowerCase().trim();
+  if (!x) return null;
+  if (x.includes("unlimit")) return "unlimited";
+  if (x.includes("basic")) return "basic";
+  return null;
+}
 
 // --- PAY REDIRECTS (Tribute) ---
 // env:
-// PUBLIC_BASE_URL (не обязателен)
 // TRIBUTE_BASIC_URL
 // TRIBUTE_UNLIMITED_URL
-
 function withContactIdInStartapp(url, contactId) {
   // startapp=CODE__cid__CONTACT_ID
   return String(url).replace(
@@ -60,6 +89,7 @@ app.get("/pay/unlimited", (req, res) => {
   return res.redirect(302, link);
 });
 
+// ---------- DEBUG ACCESS ----------
 app.get("/debug/access", (req, res) => {
   try {
     if (!fs.existsSync("/data/access.json")) {
@@ -76,78 +106,65 @@ app.get("/debug/access", (req, res) => {
   }
 });
 
-
 // ---------- SENDPULSE WEBHOOK ----------
-app.post(
-  "/sendpulse/webhook",
-  express.json({ limit: "2mb" }),
-  handleSendpulseWebhook
-);
+app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
-// ---------- TRIBUTE WEBHOOK ----------
-function addDaysISO(days) {
-  const ms = Date.now() + days * 24 * 60 * 60 * 1000;
-  return new Date(ms).toISOString();
-}
-
-function parseCidFromStartapp(startapp) {
-  // ожидаем ...__cid__CONTACTID
-  const s = String(startapp || "");
-  const m = s.match(/__cid__([^&\s]+)/);
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
-function normalizePlan(p) {
-  const x = String(p || "").toLowerCase().trim();
-  if (x.includes("unlimit")) return "unlimited";
-  if (x.includes("basic")) return "basic";
-  // если у тебя в Tribute названия другие — подгони тут
-  return null;
-}
-
-app.post("/tribute/webhook", (req, res) => {
+// ---------- TRIBUTE WEBHOOK (ЕДИНСТВЕННЫЙ РОУТ!) ----------
+async function tributeWebhook(req, res) {
   try {
-    // 1) Берём откуда угодно: body / query
-    const body = req.body || {};
     const q = req.query || {};
+    const b = req.body || {};
 
-    // 2) plan
+    // Логи — чтобы видеть, что реально прислал Tribute
+    console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
+    console.log("TRIBUTE_WEBHOOK_QUERY:", q);
+    console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
+
+    // 1) startapp достаём откуда угодно
+    const startapp =
+      q.startapp ||
+      b.startapp ||
+      b.startApp ||
+      b?.telegram?.startapp ||
+      b?.telegram?.startApp ||
+      b?.context?.startapp ||
+      b?.context?.startApp ||
+      b?.order?.details ||
+      b?.order?.comment ||
+      b?.details ||
+      b?.data?.startapp ||
+      b?.payload?.startapp ||
+      "";
+
+    // 2) contactId/cid: query/body/из startapp
+    const contactId = String(
+      q.contactId ||
+        q.contact_id ||
+        q.cid ||
+        b.contactId ||
+        b.contact_id ||
+        b.cid ||
+        parseCidFromStartapp(startapp) ||
+        ""
+    ).trim();
+
+    // 3) plan: явный или из startapp-кода
     const plan =
-      normalizePlan(body.plan) ||
       normalizePlan(q.plan) ||
-      normalizePlan(body?.subscription?.plan) ||
-      normalizePlan(body?.product?.type) ||
-      null;
-
-    // 3) contactId: сначала явный, потом пробуем вытащить из startapp
-    let contactId = String(body.contactId || body.contact_id || q.contactId || q.contact_id || "").trim();
-
-    // попробуем вытащить из startapp/контекста/деталей заказа
-    if (!contactId) {
-      const startapp =
-        body.startapp ||
-        body.startApp ||
-        body?.telegram?.startapp ||
-        body?.telegram?.startApp ||
-        body?.context?.startapp ||
-        body?.context?.startApp ||
-        body?.order?.details ||
-        body?.order?.comment ||
-        body?.details ||
-        "";
-
-      contactId = parseCidFromStartapp(startapp) || "";
-    }
+      normalizePlan(b.plan) ||
+      normalizePlan(b?.subscription?.plan) ||
+      normalizePlan(b?.product?.type) ||
+      planFromStartapp(startapp);
 
     if (!contactId || !plan) {
       return res.status(400).json({
         ok: false,
         error: "need contactId & plan",
-        got: { contactId: contactId || null, plan: plan || null },
+        got: { contactId: contactId || null, plan: plan || null, startapp },
       });
     }
 
-    // 4) ставим подписку на 30 дней для обоих планов
+    // 4) подписка на 30 дней для basic и unlimited
     const paid_until = addDaysISO(30);
 
     setAccess(contactId, {
@@ -162,23 +179,18 @@ app.post("/tribute/webhook", (req, res) => {
     console.error("TRIBUTE_WEBHOOK_ERROR:", e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
-});
+}
 
-// (необязательно) чтобы в браузере не было "Cannot GET"
-app.get("/tribute/webhook", (req, res) => {
-  res.status(200).send("ok");
-});
-
+// принимаем и POST, и GET (на случай тестов)
+app.post("/tribute/webhook", tributeWebhook);
+app.get("/tribute/webhook", tributeWebhook);
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- TEST ACTIVATE (для проверки без Tribute) ----------
-app.get("/test/activate", testActivate);
-
-// ---------- OPTIONAL: CHAT API (если нужен) ----------
+// ---------- OPTIONAL: CHAT API ----------
 app.post("/chat", async (req, res) => {
   try {
     const body = req.body || {};
@@ -206,13 +218,6 @@ app.post("/chat", async (req, res) => {
     console.error("CHAT_ERROR:", err);
     res.status(500).json({ ok: false, error: "Server error" });
   }
-});
-
-app.all("/tribute/webhook", express.json({ limit: "2mb" }), (req, res) => {
-  console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
-  console.log("TRIBUTE_WEBHOOK_HEADERS:", req.headers);
-  console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(req.body, null, 2));
-  res.status(200).json({ ok: true });
 });
 
 // ---------- START SERVER ----------
