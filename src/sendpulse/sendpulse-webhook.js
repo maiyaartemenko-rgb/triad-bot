@@ -80,24 +80,10 @@ function buildPaywallText({ gate }) {
 }
 
 function getPayLinks(contactId) {
-  const basicBase = process.env.TRIBUTE_BASIC_URL || "";
-  const unlimitedBase = process.env.TRIBUTE_UNLIMITED_URL || "";
-
-  if (!basicBase || !unlimitedBase) {
-    return { basic: null, unlimited: null };
-  }
-
-  // Вшиваем contactId в startapp, чтобы Tribute вернул его в webhook
-  function withContactId(url) {
-    return url.replace(
-      /startapp=([^&]+)/,
-      (m, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
-    );
-  }
-
+  const base = process.env.PUBLIC_BASE_URL || "https://triad-bot-ksxb.onrender.com";
   return {
-    basic: withContactId(basicBase),
-    unlimited: withContactId(unlimitedBase),
+    basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
+    unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
   };
 }
 

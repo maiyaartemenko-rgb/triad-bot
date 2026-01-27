@@ -13,6 +13,52 @@ const app = express();
 // ---------- MIDDLEWARE ----------
 app.use(express.json({ limit: "2mb" }));
 
+// --- PAY REDIRECTS (Tribute) ---
+// Требуются env:
+// PUBLIC_BASE_URL (не обязателен, только для ссылок)
+// TRIBUTE_BASIC_URL
+// TRIBUTE_UNLIMITED_URL
+
+function withContactIdInStartapp(url, contactId) {
+  // Вшиваем contactId в startapp: startapp=CODE__cid__CONTACT_ID
+  // Tribute это сохранит в "детали заказа"/контекст и мы сможем достать в webhook
+  return String(url).replace(
+    /startapp=([^&]+)/,
+    (_, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
+  );
+}
+
+function requireCid(req, res) {
+  const cid = String(req.query.cid || "").trim();
+  if (!cid) {
+    res.status(400).send("Missing cid");
+    return null;
+  }
+  return cid;
+}
+
+app.get("/pay/basic", (req, res) => {
+  const cid = requireCid(req, res);
+  if (!cid) return;
+
+  const base = process.env.TRIBUTE_BASIC_URL;
+  if (!base) return res.status(500).send("TRIBUTE_BASIC_URL is not set");
+
+  const link = withContactIdInStartapp(base, cid);
+  return res.redirect(302, link);
+});
+
+app.get("/pay/unlimited", (req, res) => {
+  const cid = requireCid(req, res);
+  if (!cid) return;
+
+  const base = process.env.TRIBUTE_UNLIMITED_URL;
+  if (!base) return res.status(500).send("TRIBUTE_UNLIMITED_URL is not set");
+
+  const link = withContactIdInStartapp(base, cid);
+  return res.redirect(302, link);
+});
+
 app.get("/debug/access", (req, res) => {
   try {
     if (!fs.existsSync("/data/access.json")) {
