@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import dotenv from "dotenv";
 import fs from "node:fs";
@@ -30,7 +31,7 @@ function parseCidFromStartapp(startapp = "") {
 }
 
 function planFromStartapp(startapp = "") {
-  // ВАЖНО: подставь свои коды startapp от Tribute:
+  // ТВОИ коды Tribute:
   // basic -> sMoF
   // unlimited -> sMoE
   const s = String(startapp || "");
@@ -93,14 +94,15 @@ app.get("/pay/unlimited", (req, res) => {
 // ---------- DEBUG ACCESS ----------
 app.get("/debug/access", (req, res) => {
   try {
-    if (!fs.existsSync("/data/access.json")) {
+    const file = "/data/access.json";
+    if (!fs.existsSync(file)) {
       return res.json({
         ok: true,
         users: {},
         note: "access.json ещё не создан — появится после первого вопроса",
       });
     }
-    const txt = fs.readFileSync("/data/access.json", "utf8");
+    const txt = fs.readFileSync(file, "utf8");
     res.type("json").send(txt);
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -110,35 +112,42 @@ app.get("/debug/access", (req, res) => {
 // ---------- SENDPULSE WEBHOOK ----------
 app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
-// ---------- TRIBUTE WEBHOOK (ЕДИНСТВЕННЫЙ РОУТ!) ----------
+// ---------- TRIBUTE WEBHOOK (ЕДИНСТВЕННЫЙ РОУТ) ----------
 async function tributeWebhook(req, res) {
   try {
     const q = req.query || {};
     const b = req.body || {};
 
-    // Логи — чтобы видеть, что реально прислал Tribute
+    // логи (оставь, пока тестируешь)
     console.log("TRIBUTE_WEBHOOK_METHOD:", req.method);
     console.log("TRIBUTE_WEBHOOK_QUERY:", q);
     console.log("TRIBUTE_WEBHOOK_BODY:", JSON.stringify(b, null, 2));
 
-    // 1) startapp достаём откуда угодно
+    // 1) startapp/web_app_link достаём откуда угодно
     const startapp =
       q.startapp ||
       b.startapp ||
       b.startApp ||
+      b?.payload?.startapp ||
+      b?.payload?.web_app_link ||
       b?.telegram?.startapp ||
-      b?.telegram?.startApp ||
       b?.context?.startapp ||
-      b?.context?.startApp ||
       b?.order?.details ||
       b?.order?.comment ||
       b?.details ||
-      b?.data?.startapp ||
-      b?.payload?.startapp ||
       "";
 
-    // 2) contactId/cid: query/body/из startapp
-    const contactId = String(
+    // 2) plan
+    const plan =
+      normalizePlan(q.plan) ||
+      normalizePlan(b.plan) ||
+      normalizePlan(b?.payload?.subscription_name) ||
+      normalizePlan(b?.subscription?.plan) ||
+      normalizePlan(b?.product?.type) ||
+      planFromStartapp(startapp);
+
+    // 3) contactId: query/body/из startapp
+    let contactId = String(
       q.contactId ||
         q.contact_id ||
         q.cid ||
@@ -149,13 +158,18 @@ async function tributeWebhook(req, res) {
         ""
     ).trim();
 
-    // 3) plan: явный или из startapp-кода
-    const plan =
-      normalizePlan(q.plan) ||
-      normalizePlan(b.plan) ||
-      normalizePlan(b?.subscription?.plan) ||
-      normalizePlan(b?.product?.type) ||
-      planFromStartapp(startapp);
+    // 4) если contactId не нашли — пробуем по telegram_user_id (через tg-map-store)
+    if (!contactId) {
+      const tgId =
+        b?.payload?.telegram_user_id ||
+        b?.telegram_user_id ||
+        b?.payload?.user?.telegram_user_id ||
+        null;
+
+      if (tgId) {
+        contactId = String(getContactIdByTgId(String(tgId)) || "").trim();
+      }
+    }
 
     if (!contactId || !plan) {
       return res.status(400).json({
@@ -165,11 +179,11 @@ async function tributeWebhook(req, res) {
       });
     }
 
-    // 4) подписка на 30 дней для basic и unlimited
-   const paid_until =
-  body?.payload?.expires_at ||
-  body?.expires_at ||
-  addDaysISO(30);
+    // 5) paid_until: берём expires_at от Tribute, иначе +30 дней
+    const paid_until =
+      b?.payload?.expires_at ||
+      b?.expires_at ||
+      addDaysISO(30);
 
     setAccess(contactId, {
       plan,
@@ -185,22 +199,9 @@ async function tributeWebhook(req, res) {
   }
 }
 
-// принимаем и POST, и GET (на случай тестов)
+// принимаем и POST, и GET (на случай тестов/пингов)
 app.post("/tribute/webhook", tributeWebhook);
 app.get("/tribute/webhook", tributeWebhook);
-
-// если contactId не нашли через startapp/детали
-if (!contactId) {
-  const tgId =
-    body?.payload?.telegram_user_id ||
-    body?.telegram_user_id ||
-    body?.payload?.user?.telegram_user_id ||
-    null;
-
-  if (tgId) {
-    contactId = getContactIdByTgId(tgId) || "";
-  }
-}
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
@@ -215,9 +216,7 @@ app.post("/chat", async (req, res) => {
     const profile = body.profile || {};
     const partnerSign = body.partnerSign || null;
 
-    if (!text.trim()) {
-      return res.status(400).json({ error: "Missing text" });
-    }
+    if (!text.trim()) return res.status(400).json({ error: "Missing text" });
 
     const result = await triadChat({
       userText: text,
