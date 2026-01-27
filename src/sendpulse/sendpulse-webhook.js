@@ -65,18 +65,33 @@ function decodeHtmlEntities(s = "") {
 
 // ---------- PAYWALL ----------
 function buildPaywallText({ gate }) {
-  // gate.reason может прийти (если ты добавишь позже). Пока поддержим и без него.
-  const isTrialEnded = gate?.reason === "trial_ended";
+  const reason = gate?.reason;
 
-  const top = isTrialEnded
-    ? "⛔ <b>Бесплатный период завершён.</b>"
-    : "⛔ <b>Дневной лимит вопросов исчерпан.</b>";
+  if (reason === "paid_ended") {
+    return [
+      "⛔ <b>Подписка закончилась.</b>",
+      "Чтобы продолжить — оформи подписку на следующий месяц 👇",
+      "",
+      "<b>Доступы:</b>",
+    ].join("\n");
+  }
 
-  const line2 = isTrialEnded
-    ? "Чтобы продолжить — оформи подписку ниже 👇"
-    : "Завтра снова будут доступны 3 вопроса бесплатно 👇";
+  if (reason === "trial_ended") {
+    return [
+      "⛔ <b>Бесплатный период завершён.</b>",
+      "Чтобы продолжить — оформи подписку ниже 👇",
+      "",
+      "<b>Доступы:</b>",
+    ].join("\n");
+  }
 
-  return [top, line2, "", "<b>Доступы:</b>"].join("\n");
+  // daily_limit
+  return [
+    "⛔ <b>Дневной лимит вопросов исчерпан.</b>",
+    "Завтра снова будут доступны 3 вопроса бесплатно 👇",
+    "",
+    "<b>Доступы:</b>",
+  ].join("\n");
 }
 
 function getPayLinks(contactId) {

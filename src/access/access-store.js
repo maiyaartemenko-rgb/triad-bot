@@ -50,21 +50,21 @@ function isTrialActive(rec) {
 }
 
 function isPaidActive(rec) {
-  if (!rec?.plan) return false;
   if (!rec?.paid_until) return false;
-  return new Date(rec.paid_until).getTime() > Date.now();
+  const until = new Date(rec.paid_until).getTime();
+  return Number.isFinite(until) && Date.now() < until;
 }
 
 function planDailyLimit(rec) {
   if (!rec) return 0;
 
-  // ✅ если plan есть, но подписка истекла — доступа нет
-  if ((rec.plan === "basic" || rec.plan === "unlimited") && !isPaidActive(rec)) return 0;
+  // ✅ платные планы действуют ТОЛЬКО пока paid_until активен
+  if (rec.plan === "unlimited") return isPaidActive(rec) ? Infinity : 0;
+  if (rec.plan === "basic") return isPaidActive(rec) ? 3 : 0;
 
-  if (rec.plan === "unlimited") return Infinity;
-  if (rec.plan === "basic") return 3;
-
+  // ✅ если плана нет — пробуем триал
   if (isTrialActive(rec)) return 3;
+
   return 0;
 }
 
@@ -87,21 +87,26 @@ export function ensureUserRecord(contactId) {
  * ok: true|false
  * left: сколько осталось сегодня
  * plan: "trial" | "basic" | "unlimited" | null
- * reason: null | "daily_limit" | "trial_ended"
+ * reason: null | "daily_limit" | "trial_ended" | "paid_ended"
  */
 export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
-// ✅ авто-сброс истекшей подписки
-if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
-  if (new Date(rec.paid_until).getTime() <= Date.now()) {
-    rec.plan = null;
-    rec.paid_until = null;
-    rec.daily_used = 0;
+  // ✅ если подписка истекла — сбрасываем план
+  // (важно: reason вернём "paid_ended", чтобы текст был правильный)
+  let paidJustEnded = false;
+  if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
+    const untilMs = new Date(rec.paid_until).getTime();
+    if (Number.isFinite(untilMs) && untilMs <= Date.now()) {
+      paidJustEnded = true;
+      rec.plan = null;
+      rec.paid_until = null;
+      rec.daily_used = 0;
+    }
   }
-}
-  // сбросить счётчик, если новый день
+
+  // ✅ сбросить дневной счётчик, если новый день
   if (rec.last_reset_date !== dayNow) {
     rec.last_reset_date = dayNow;
     rec.daily_used = 0;
@@ -110,24 +115,25 @@ if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
   const trialActive = isTrialActive(rec);
   const limit = planDailyLimit(rec);
 
-  // unlimited
+  // ✅ unlimited (Infinity)
   if (limit === Infinity) {
     setAccess(contactId, rec);
-    return { ok: true, left: Infinity, plan: rec.plan || "unlimited", reason: null };
+    return { ok: true, left: Infinity, plan: "unlimited", reason: null };
   }
 
-  // если лимит = 0 (например триал кончился и план не куплен)
+  // ✅ нет лимита вообще (нет триала и нет активной подписки)
   if (limit <= 0) {
+    const reason = paidJustEnded ? "paid_ended" : "trial_ended";
     setAccess(contactId, rec);
     return {
       ok: false,
       left: 0,
-      plan: rec.plan || (trialActive ? "trial" : null),
-      reason: "trial_ended",
+      plan: trialActive ? "trial" : null,
+      reason,
     };
   }
 
-  // есть лимит и ещё осталось
+  // ✅ есть лимит и ещё осталось
   if (rec.daily_used < limit) {
     rec.daily_used += 1;
     setAccess(contactId, rec);
@@ -142,16 +148,15 @@ if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
     };
   }
 
-  // лимит исчерпан
+  // ✅ лимит исчерпан
   setAccess(contactId, rec);
 
   const planLabel = rec.plan || (trialActive ? "trial" : null);
 
-  // ✅ различаем:
-  // - trialActive=true → завтра снова можно
-  // - trialActive=false и plan=null → триал завершён
-  // - basic тоже завтра можно, но это тоже daily_limit
-  const reason = trialActive || rec.plan ? "daily_limit" : "trial_ended";
-
-  return { ok: false, left: 0, plan: planLabel, reason };
+  return {
+    ok: false,
+    left: 0,
+    plan: planLabel,
+    reason: "daily_limit",
+  };
 }
