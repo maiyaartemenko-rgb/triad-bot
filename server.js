@@ -59,7 +59,7 @@ function withContactIdInStartapp(url, contactId) {
   // (разделитель "cid" тоже буквенный)
   return String(url).replace(
     /startapp=([^&]+)/,
-    (_, code) => `startapp=${code}cid${cid}`
+    (_, code) => `startapp=${code}__cid__${encodeURIComponent(contactId)}`
   );
 }
 
