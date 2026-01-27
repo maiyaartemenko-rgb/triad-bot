@@ -87,11 +87,32 @@ app.post(
 );
 
 // ---------- TRIBUTE WEBHOOK ----------
-app.post(
-  "/tribute/webhook",
-  express.json({ limit: "2mb" }),
-  handleTributeWebhook
-);
+app.post("/tribute/webhook", (req, res) => {
+  console.log("TRIBUTE_WEBHOOK_HEADERS:", req.headers);
+  console.log("TRIBUTE_WEBHOOK_BODY:", req.body);
+  console.log("TRIBUTE_WEBHOOK_QUERY:", req.query);
+
+  const contactId =
+    req.body?.contactId ||
+    req.body?.contact_id ||
+    req.query?.contactId ||
+    req.query?.contact_id;
+
+  const plan =
+    req.body?.plan ||
+    req.query?.plan;
+
+  if (!contactId || !plan) {
+    return res.status(400).json({
+      ok: false,
+      error: "need contactId & plan",
+      got: { body: req.body, query: req.query },
+    });
+  }
+
+  return res.json({ ok: true, contactId, plan });
+});
+
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
