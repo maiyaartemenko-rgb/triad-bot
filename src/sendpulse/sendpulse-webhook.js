@@ -264,7 +264,7 @@ console.log("TG_MAP_SAVE:", { tgId, contactId });
         profile,
         partnerSign,
         history,
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-5.2",
         temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.6),
       });
     } catch (e) {
