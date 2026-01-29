@@ -11,6 +11,8 @@ const LOCAL_FILE = path.resolve(process.cwd(), "data/access.json");
 // ✅ всегда пишем в /data если он доступен, иначе локально
 const FILE = fs.existsSync("/data") ? RENDER_DISK : LOCAL_FILE;
 
+const UNLIMITED_DAILY_LIMIT = 3;
+
 function safeLoad() {
   try {
     const txt = fs.readFileSync(FILE, "utf8");
@@ -61,6 +63,23 @@ function planDailyLimit(rec) {
   // ✅ платные планы действуют ТОЛЬКО пока paid_until активен
   if (rec.plan === "unlimited") return isPaidActive(rec) ? 150 : 0;
   if (rec.plan === "basic") return isPaidActive(rec) ? 3 : 0;
+
+if (user.plan === "unlimited") {
+  if (user.daily_used >= UNLIMITED_DAILY_LIMIT) {
+    return {
+      ok: false,
+      reason: "silent_limit"
+    };
+  }
+
+  user.daily_used += 1;
+  save();
+  return {
+    ok: true,
+    plan: "unlimited",
+    left: UNLIMITED_DAILY_LIMIT - user.daily_used
+  };
+}
 
   // ✅ если плана нет — пробуем триал
   if (isTrialActive(rec)) return 3;

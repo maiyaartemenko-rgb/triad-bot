@@ -233,7 +233,7 @@ console.log("TG_MAP_SAVE:", { tgId, contactId });
   const gate = checkAndConsumeQuota(contactId);
 
 // ✅ Если это unlimited и лимит 150/день исчерпан — МОЛЧА НЕ ОТВЕЧАЕМ
-if (!gate.ok && gate.plan === "unlimited") {
+if (!gate.ok && gate.reason === "silent_limit") {
   return;
 }
 
