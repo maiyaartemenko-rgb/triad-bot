@@ -226,6 +226,44 @@ export async function handleSendpulseWebhook(req, res) {
       });
       return;
     }
+// 🔐 ADMIN: снять безлимит у себя
+if (lower === "/remove_unlimited") {
+  const adminTgId = String(process.env.ADMIN_TG_ID || "").trim();
+
+  if (!adminTgId) {
+    await sendpulseTelegramSendText({
+      contactId,
+      text: "ADMIN_TG_ID не задан в env",
+    });
+    return;
+  }
+
+  const tgId = extractTelegramUserId(event);
+
+  if (String(tgId) !== adminTgId) {
+    await sendpulseTelegramSendText({
+      contactId,
+      text: "⛔ Команда недоступна",
+    });
+    return;
+  }
+
+  // снимаем доступ
+  const { setAccess } = await import("../access/access-store.js");
+
+  setAccess(contactId, {
+    plan: null,
+    paid_until: null,
+    daily_used: 0,
+  });
+
+  await sendpulseTelegramSendText({
+    contactId,
+    text: "✅ Безлимит снят. Ты снова в обычном режиме.",
+  });
+
+  return;
+}
 
     // "оплата" — показываем ссылки без расхода лимита
     if (lower === "оплата" || lower === "/pay") {
