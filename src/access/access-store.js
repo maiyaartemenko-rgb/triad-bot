@@ -3,22 +3,25 @@ import fs from "node:fs";
 import path from "node:path";
 
 // Render persistent disk обычно смонтирован в /data
-const RENDER_DISK = "/data/access.json";
-
-// Локально — пусть будет ./data/access.json
+const RENDER_FILE = "/data/access.json";
+// Локально — ./data/access.json
 const LOCAL_FILE = path.resolve(process.cwd(), "data/access.json");
 
 // ✅ всегда пишем в /data если он доступен, иначе локально
-const FILE = fs.existsSync("/data") ? RENDER_DISK : LOCAL_FILE;
+const FILE = fs.existsSync("/data") ? RENDER_FILE : LOCAL_FILE;
 
+// Лимиты
 const UNLIMITED_DAILY_LIMIT = 150;
+const BASIC_DAILY_LIMIT = 3;
+const TRIAL_DAILY_LIMIT = 3;
+const TRIAL_DAYS = 3;
 
 function safeLoad() {
   try {
     const txt = fs.readFileSync(FILE, "utf8");
     return JSON.parse(txt);
   } catch {
-    return { users: {} }; // { users: { [contactId]: { plan, paid_until, daily_used, last_reset_date, trial_started_at } } }
+    return { users: {} };
   }
 }
 
@@ -29,26 +32,31 @@ function safeSave(db) {
 
 export function getAccess(contactId) {
   const db = safeLoad();
-  return db.users[contactId] || null;
+  return db.users[String(contactId)] || null;
 }
 
 export function setAccess(contactId, data) {
   const db = safeLoad();
-  db.users[contactId] = { ...(db.users[contactId] || {}), ...data };
+  const key = String(contactId);
+  db.users[key] = { ...(db.users[key] || {}), ...(data || {}) };
   safeSave(db);
-  return db.users[contactId];
+  return db.users[key];
 }
 
 function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysSinceISO(iso) {
+  if (!iso) return Infinity;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return Infinity;
+  return Math.floor((Date.now() - t) / 86400000);
 }
 
 function isTrialActive(rec) {
   if (!rec?.trial_started_at) return false;
-  const started = new Date(rec.trial_started_at).getTime();
-  const diffDays = Math.floor((Date.now() - started) / 86400000);
-  return diffDays < 3; // 3 дня
+  return daysSinceISO(rec.trial_started_at) < TRIAL_DAYS;
 }
 
 function isPaidActive(rec) {
@@ -60,44 +68,30 @@ function isPaidActive(rec) {
 function planDailyLimit(rec) {
   if (!rec) return 0;
 
-  // ✅ платные планы действуют ТОЛЬКО пока paid_until активен
-  if (rec.plan === "unlimited") return isPaidActive(rec) ? 150 : 0;
-  if (rec.plan === "basic") return isPaidActive(rec) ? 3 : 0;
+  // Платные планы действуют только пока paid_until активен
+  if (rec.plan === "unlimited") return isPaidActive(rec) ? UNLIMITED_DAILY_LIMIT : 0;
+  if (rec.plan === "basic") return isPaidActive(rec) ? BASIC_DAILY_LIMIT : 0;
 
-if (user.plan === "unlimited") {
-  if (user.daily_used >= UNLIMITED_DAILY_LIMIT) {
-    return {
-      ok: false,
-      reason: "silent_limit"
-    };
-  }
-
-  user.daily_used += 1;
-  save();
-  return {
-    ok: true,
-    plan: "unlimited",
-    left: UNLIMITED_DAILY_LIMIT - user.daily_used
-  };
-}
-
-  // ✅ если плана нет — пробуем триал
-  if (isTrialActive(rec)) return 3;
+  // Триал
+  if (isTrialActive(rec)) return TRIAL_DAILY_LIMIT;
 
   return 0;
 }
 
 export function ensureUserRecord(contactId) {
-  const rec = getAccess(contactId);
-  if (rec) return rec;
+  const key = String(contactId);
+  const existing = getAccess(key);
+  if (existing) return existing;
 
-  // создаём триал при первом обращении
-  return setAccess(contactId, {
-    plan: null, // null = не оплачен
-    trial_started_at: new Date().toISOString(),
-    daily_used: 0,
-    last_reset_date: todayStr(),
+  return setAccess(key, {
+    plan: null,
     paid_until: null,
+    trial_started_at: new Date().toISOString(),
+    last_reset_date: todayStr(),
+    daily_used: 0,
+
+    // ✅ чтобы на 4-й день не спамить paywall каждый раз
+    trial_end_notified: false,
   });
 }
 
@@ -106,14 +100,14 @@ export function ensureUserRecord(contactId) {
  * ok: true|false
  * left: сколько осталось сегодня
  * plan: "trial" | "basic" | "unlimited" | null
- * reason: null | "daily_limit" | "trial_ended" | "paid_ended"
+ * reason: null | "daily_limit" | "trial_ended" | "paid_ended" | "silent_limit"
+ * notify: true|false (важно только для trial_ended)
  */
 export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
-  // ✅ если подписка истекла — сбрасываем план
-  // (важно: reason вернём "paid_ended", чтобы текст был правильный)
+  // 1) если подписка истекла — сбрасываем план (но помечаем paid_ended)
   let paidJustEnded = false;
   if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
     const untilMs = new Date(rec.paid_until).getTime();
@@ -125,52 +119,92 @@ export function checkAndConsumeQuota(contactId) {
     }
   }
 
-  // ✅ сбросить дневной счётчик, если новый день
+  // 2) новый день → сбрасываем дневной счётчик
   if (rec.last_reset_date !== dayNow) {
     rec.last_reset_date = dayNow;
     rec.daily_used = 0;
+
+    // если триал закончился давно — на новый день не надо снова спамить paywall
+    // trial_end_notified оставляем как есть (true останется true)
   }
 
   const trialActive = isTrialActive(rec);
+  const paidActive = isPaidActive(rec);
   const limit = planDailyLimit(rec);
 
-
-  // ✅ нет лимита вообще (нет триала и нет активной подписки)
+  // 3) если лимит 0 — значит нет доступа (trial_ended или paid_ended)
   if (limit <= 0) {
-    const reason = paidJustEnded ? "paid_ended" : "trial_ended";
+    // trial закончился
+    if (!trialActive && !paidActive && !rec.plan) {
+      const shouldNotify = rec.trial_end_notified ? false : true;
+      rec.trial_end_notified = true;
+      setAccess(contactId, rec);
+      return {
+        ok: false,
+        left: 0,
+        plan: null,
+        reason: "trial_ended",
+        notify: shouldNotify,
+      };
+    }
+
+    // подписка закончилась
     setAccess(contactId, rec);
     return {
       ok: false,
       left: 0,
-      plan: trialActive ? "trial" : null,
-      reason,
+      plan: null,
+      reason: paidJustEnded ? "paid_ended" : "paid_ended",
+      notify: true,
     };
   }
 
-  // ✅ есть лимит и ещё осталось
+  // 4) unlimited: если достигли 150 — молчим (silent_limit)
+  if (rec.plan === "unlimited" && limit === UNLIMITED_DAILY_LIMIT) {
+    if (rec.daily_used >= UNLIMITED_DAILY_LIMIT) {
+      setAccess(contactId, rec);
+      return {
+        ok: false,
+        left: 0,
+        plan: "unlimited",
+        reason: "silent_limit",
+        notify: false,
+      };
+    }
+
+    rec.daily_used += 1;
+    setAccess(contactId, rec);
+    return {
+      ok: true,
+      left: UNLIMITED_DAILY_LIMIT - rec.daily_used,
+      plan: "unlimited",
+      reason: null,
+      notify: false,
+    };
+  }
+
+  // 5) обычные лимиты (trial/basic): 3 в день
   if (rec.daily_used < limit) {
     rec.daily_used += 1;
     setAccess(contactId, rec);
 
     const planLabel = rec.plan || (trialActive ? "trial" : null);
-
     return {
       ok: true,
       left: limit - rec.daily_used,
       plan: planLabel,
       reason: null,
+      notify: false,
     };
   }
 
-  // ✅ лимит исчерпан
+  // 6) дневной лимит исчерпан
   setAccess(contactId, rec);
-
-  const planLabel = rec.plan || (trialActive ? "trial" : null);
-
   return {
     ok: false,
     left: 0,
-    plan: planLabel,
+    plan: rec.plan || (trialActive ? "trial" : null),
     reason: "daily_limit",
+    notify: true,
   };
 }

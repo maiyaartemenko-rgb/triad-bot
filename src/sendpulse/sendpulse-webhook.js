@@ -3,21 +3,29 @@
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 import { sendpulseTelegramSendText } from "./sendpulse-api.js";
-
 import { setTgMap } from "../access/tg-map-store.js";
 
 // путь как у тебя сейчас
-import {
-  getHistory,
-  pushToHistory,
-  clearHistory,
-} from "../src/memory/memory-store.js";
+import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
 
 import { checkAndConsumeQuota } from "../access/access-store.js";
 
 // ---------- helpers ----------
 function getEvent(payload) {
-  return Array.isArray(payload) ? payload[0] ?? {} : payload ?? {};
+  return Array.isArray(payload) ? (payload[0] ?? {}) : (payload ?? {});
+}
+
+function safeStr(x) {
+  return String(x ?? "").trim();
+}
+
+// --- PROMO TIMER ---
+const PROMO_UNTIL_ISO = process.env.PROMO_UNTIL_ISO || "2026-02-04T23:59:59+03:00"; 
+// (до конца дня 4 февраля по Москве)
+
+function isPromoActive() {
+  const until = new Date(PROMO_UNTIL_ISO).getTime();
+  return Number.isFinite(until) && Date.now() <= until;
 }
 
 function extractText(event) {
@@ -43,13 +51,13 @@ function extractTelegramUserId(event) {
     event?.contact?.external_id,
   ];
 
-  const v = candidates.find((x) => x !== undefined && x !== null && String(x).trim() !== "");
-  return v ? String(v).trim() : null;
+  const v = candidates.find((x) => x !== undefined && x !== null && safeStr(x) !== "");
+  return v ? safeStr(v) : null;
 }
 
 function normalizeMainSignFromVars(vars) {
   const raw = vars?.Animal || vars?.animal || "";
-  return String(raw)
+  return safeStr(raw)
     .replace(/[^\p{L}\s-]/gu, "")
     .trim()
     .toUpperCase();
@@ -63,7 +71,7 @@ function parseActiveSigns(vars) {
     if (!Array.isArray(arr)) return [];
     return arr
       .map((x) => ({
-        sign: String(x?.sign || "").trim().toUpperCase(),
+        sign: safeStr(x?.sign).toUpperCase(),
         pct: Number(x?.pct ?? 0),
       }))
       .filter((x) => x.sign && Number.isFinite(x.pct));
@@ -80,18 +88,10 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&gt;", ">");
 }
 
-function safeStr(x) {
-  return String(x ?? "").trim();
-}
-
 // ---------- PAYWALL ----------
 function buildPaywallText({ gate, mode = "auto" }) {
-  // mode:
-  // - "auto" -> по причине из gate
-  // - "manual" -> когда юзер сам просит "оплата"
-
   if (mode === "manual") {
-    return ["<b>Выберите доступ:</b>"].join("\n");
+    return "<b>Выберите доступ:</b>";
   }
 
   const reason = gate?.reason || null;
@@ -106,7 +106,6 @@ function buildPaywallText({ gate, mode = "auto" }) {
   }
 
   if (reason === "trial_ended") {
-    // ВАЖНО: тут НЕТ текста про “завтра”, потому что триал уже закончился
     return [
       "⛔ <b>Бесплатный период завершён.</b>",
       "Чтобы продолжить — оформи подписку 👇",
@@ -115,7 +114,7 @@ function buildPaywallText({ gate, mode = "auto" }) {
     ].join("\n");
   }
 
-  // daily_limit: “завтра” уместно только когда это реально дневной лимит
+  // daily_limit
   return [
     "⛔ <b>Дневной лимит вопросов исчерпан.</b>",
     "Завтра снова будут доступны 3 вопроса 👇",
@@ -125,16 +124,13 @@ function buildPaywallText({ gate, mode = "auto" }) {
 }
 
 function getPublicBaseUrl(req) {
-  // Если PUBLIC_BASE_URL задан — используем его (самый стабильный вариант)
   const envBase = safeStr(process.env.PUBLIC_BASE_URL);
   if (envBase) return envBase.replace(/\/$/, "");
 
-  // fallback: строим из запроса (в проде может быть прокси)
   const proto = safeStr(req.headers["x-forwarded-proto"]) || "https";
-  const host =
-    safeStr(req.headers["x-forwarded-host"]) || safeStr(req.headers.host);
-
+  const host = safeStr(req.headers["x-forwarded-host"]) || safeStr(req.headers.host);
   if (!host) return "";
+
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
@@ -142,7 +138,6 @@ function getPayLinks(req, contactId) {
   const base = getPublicBaseUrl(req);
   if (!base) return { basic: null, unlimited: null };
 
-  // ВАЖНО: ссылки ведут на ТВОЙ сервер /pay/..., который уже делает редирект в Tribute
   return {
     basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
     unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
@@ -158,19 +153,28 @@ async function sendPaywall(req, contactId, gate, mode = "auto") {
       text:
         "⛔ Ограничение доступа.\n\n" +
         "⚠️ Не могу построить ссылки оплаты.\n" +
-        "Проверь в Render переменную PUBLIC_BASE_URL.\n" +
-        "И что в server.js есть роуты /pay/basic и /pay/unlimited.",
+        "Проверь в Render переменную PUBLIC_BASE_URL\n" +
+        "и что в server.js есть роуты /pay/basic и /pay/unlimited.",
     });
     return;
   }
 
   const header = buildPaywallText({ gate, mode });
 
-  const text = [
-    header,
-    `• 900 ₽ — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
-    `• 2900 ₽ — безлимит: <a href="${unlimited}">Оплатить</a>`,
-  ].join("\n");
+const promo = isPromoActive();
+
+const priceLines = promo
+  ? [
+      `• <s>990 ₽</s> <b>490 ₽</b> — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
+      `• <s>2990 ₽</s> <b>1990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
+      `\n⏳ <i>Скидка действует до 4 февраля 2026</i>`,
+    ]
+  : [
+      `• <b>990 ₽</b> — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
+      `• <b>2990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
+    ];
+
+const text = [header, ...priceLines].join("\n");
 
   await sendpulseTelegramSendText({ contactId, text });
 }
@@ -193,7 +197,7 @@ export async function handleSendpulseWebhook(req, res) {
     }
     if (!text) return;
 
-    // tgId -> contactId (для Tribute, если он присылает telegram_user_id)
+    // tgId -> contactId (для Tribute)
     const tgId = extractTelegramUserId(event);
     if (tgId) {
       try {
@@ -202,14 +206,14 @@ export async function handleSendpulseWebhook(req, res) {
         console.error("setTgMap error:", e);
       }
     }
-console.log("TG_MAP_SAVE:", { tgId, contactId });
+
     const lower = text.toLowerCase();
 
     // -------- commands --------
     if (lower === "/start") {
       await sendpulseTelegramSendText({
         contactId,
-        text: "Привет!🙂",
+        text: "Привет! Напиши вопрос — и я отвечу 🙂",
       });
       return;
     }
@@ -223,31 +227,38 @@ console.log("TG_MAP_SAVE:", { tgId, contactId });
       return;
     }
 
-    // "оплата" — показываем ссылки без расхода лимита и без “завтра”
+    // "оплата" — показываем ссылки без расхода лимита
     if (lower === "оплата" || lower === "/pay") {
       await sendPaywall(req, contactId, null, "manual");
       return;
     }
 
     // -------- limits BEFORE GPT --------
-  const gate = checkAndConsumeQuota(contactId);
+    const gate = checkAndConsumeQuota(contactId);
+    console.log("GATE:", { contactId, plan: gate.plan, ok: gate.ok, left: gate.left, reason: gate.reason, notify: gate.notify });
 
-// ✅ Если это unlimited и лимит 150/день исчерпан — МОЛЧА НЕ ОТВЕЧАЕМ
-if (!gate.ok && gate.reason === "silent_limit") {
-  return;
-}
+    // ✅ Unlimited: 150/день — молча не отвечаем
+    if (!gate.ok && gate.reason === "silent_limit") {
+      return;
+    }
 
-// остальные планы — показываем paywall/сообщение
-if (!gate.ok) {
-  await sendPaywall(req, contactId, gate, "auto");
-  return;
-}
+    // ✅ Trial закончился: показываем paywall только один раз.
+    // Дальше access-store вернёт notify:false — и мы молчим.
+    if (!gate.ok && gate.reason === "trial_ended" && gate.notify === false) {
+      return;
+    }
+
+    // Остальные случаи — показываем paywall
+    if (!gate.ok) {
+      await sendPaywall(req, contactId, gate, "auto");
+      return;
+    }
 
     // -------- memory --------
     pushToHistory(contactId, "user", text);
     const history = getHistory(contactId, 10);
 
-    // -------- profile from SendPulse vars --------
+    // -------- profile --------
     const vars = event?.contact?.variables || {};
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
@@ -281,22 +292,16 @@ if (!gate.ok) {
       return;
     }
 
-    const answer =
-      safeStr(result?.answer) || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
-
+    const answer = safeStr(result?.answer) || "Я рядом. Сформулируй вопрос чуть конкретнее 🙂";
     const out = decodeHtmlEntities(answer);
 
-    await sendpulseTelegramSendText({
-      contactId,
-      text: out,
-    });
-
+    await sendpulseTelegramSendText({ contactId, text: out });
     pushToHistory(contactId, "assistant", answer);
 
-    console.log("quota:", gate.plan, "left:", gate.left, "reason:", gate.reason);
+    console.log("OK_REPLY:", { contactId, partnerSign, confidence: parsed?.confidence });
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
-    // IMPORTANT: не молчим пользователю если можем
+    // если можем — скажем пользователю, что был сбой
     try {
       const event = getEvent(req.body);
       const contactId = extractContactId(event);
