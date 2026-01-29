@@ -59,7 +59,7 @@ function planDailyLimit(rec) {
   if (!rec) return 0;
 
   // ✅ платные планы действуют ТОЛЬКО пока paid_until активен
-  if (rec.plan === "unlimited") return isPaidActive(rec) ? Infinity : 0;
+  if (rec.plan === "unlimited") return isPaidActive(rec) ? 150 : 0;
   if (rec.plan === "basic") return isPaidActive(rec) ? 3 : 0;
 
   // ✅ если плана нет — пробуем триал
@@ -115,11 +115,6 @@ export function checkAndConsumeQuota(contactId) {
   const trialActive = isTrialActive(rec);
   const limit = planDailyLimit(rec);
 
-  // ✅ unlimited (Infinity)
-  if (limit === Infinity) {
-    setAccess(contactId, rec);
-    return { ok: true, left: Infinity, plan: "unlimited", reason: null };
-  }
 
   // ✅ нет лимита вообще (нет триала и нет активной подписки)
   if (limit <= 0) {

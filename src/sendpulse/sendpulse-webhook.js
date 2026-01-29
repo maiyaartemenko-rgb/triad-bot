@@ -230,13 +230,18 @@ console.log("TG_MAP_SAVE:", { tgId, contactId });
     }
 
     // -------- limits BEFORE GPT --------
-    const gate = checkAndConsumeQuota(contactId);
+  const gate = checkAndConsumeQuota(contactId);
 
-    if (!gate.ok) {
-      // ВАЖНО: если reason не daily_limit (например trial_ended), то buildPaywallText уже без “завтра”
-      await sendPaywall(req, contactId, gate, "auto");
-      return;
-    }
+// ✅ Если это unlimited и лимит 150/день исчерпан — МОЛЧА НЕ ОТВЕЧАЕМ
+if (!gate.ok && gate.plan === "unlimited") {
+  return;
+}
+
+// остальные планы — показываем paywall/сообщение
+if (!gate.ok) {
+  await sendPaywall(req, contactId, gate, "auto");
+  return;
+}
 
     // -------- memory --------
     pushToHistory(contactId, "user", text);
