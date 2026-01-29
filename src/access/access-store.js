@@ -11,7 +11,7 @@ const LOCAL_FILE = path.resolve(process.cwd(), "data/access.json");
 // ✅ всегда пишем в /data если он доступен, иначе локально
 const FILE = fs.existsSync("/data") ? RENDER_DISK : LOCAL_FILE;
 
-const UNLIMITED_DAILY_LIMIT = 3;
+const UNLIMITED_DAILY_LIMIT = 150;
 
 function safeLoad() {
   try {
