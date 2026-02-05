@@ -44,20 +44,29 @@ async function spRequest(path, payload) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      // ✅ ВАЖНО: строка с Bearer должна быть в кавычках/бэктиках
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(payload ?? {}),
   });
 
-  const data = await resp.json().catch(() => ({}));
+  const raw = await resp.text().catch(() => "");
+  let data = {};
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = { _non_json: raw };
+    }
+  }
+
   if (!resp.ok) {
     throw new Error(`SendPulse API error ${resp.status} ${path}: ${JSON.stringify(data)}`);
   }
+
   return data;
 }
 
-// ✅ Обычное текстовое сообщение
+// ✅ Обычное текстовое сообщение (HTML)
 export async function sendpulseTelegramSendText({ contactId, text }) {
   return spRequest("/telegram/contacts/send", {
     contact_id: String(contactId),
@@ -65,15 +74,16 @@ export async function sendpulseTelegramSendText({ contactId, text }) {
       type: "text",
       text: String(text ?? ""),
       parse_mode: "HTML",
+      disable_web_page_preview: true,
     },
   });
 }
 
 // ✅ Текст + inline-кнопки (URL)
 export async function sendpulseTelegramSendButtons({ contactId, text, buttons }) {
-  const inline_keyboard = (buttons || [])
+  const items = (buttons || [])
     .filter((b) => b?.text && b?.url)
-    .map((b) => [{ text: String(b.text), url: String(b.url) }]);
+    .map((b) => ({ text: String(b.text), url: String(b.url) }));
 
   return spRequest("/telegram/contacts/send", {
     contact_id: String(contactId),
@@ -81,21 +91,21 @@ export async function sendpulseTelegramSendButtons({ contactId, text, buttons })
       type: "text",
       text: String(text ?? ""),
       parse_mode: "HTML",
+      disable_web_page_preview: true,
+
+      // Формат как у Telegram API
       reply_markup: {
-        inline_keyboard,
+        inline_keyboard: items.map((b) => [b]),
       },
+
+      // Fallback: иногда SendPulse принимает так
+      buttons: items,
     },
   });
 }
 
 /**
  * ✅ Запись переменных контакта в SendPulse
- * variables = { plan, paid_until, trial_started_at, daily_used, day }
- *
- * ВАЖНО: по твоим логам SendPulse ждёт поля:
- * - variable_name
- * - variable_value
- * или variables (массив объектов)
  */
 export async function sendpulseSetContactVariables({ contactId, variables }) {
   const vars = variables || {};
@@ -104,24 +114,24 @@ export async function sendpulseSetContactVariables({ contactId, variables }) {
     variable_value: v == null ? "" : String(v),
   }));
 
-  // 1) Попытка "пачкой" (массивом) — самый частый корректный формат
+  // 1) массивом
   try {
     return await spRequest("/telegram/contacts/setVariables", {
       contact_id: String(contactId),
-      variables: entries, // ✅ массив [{variable_name, variable_value}]
+      variables: entries,
     });
   } catch (eBatchArray) {
-    // 2) Попытка "пачкой" (объектом) — иногда в аккаунтах так
+    // 2) объектом
     try {
       const obj = {};
       for (const { variable_name, variable_value } of entries) obj[variable_name] = variable_value;
 
       return await spRequest("/telegram/contacts/setVariables", {
         contact_id: String(contactId),
-        variables: obj, // ✅ объект {name:value}
+        variables: obj,
       });
     } catch (eBatchObject) {
-      // 3) Фолбэк: по одной переменной правильными полями
+      // 3) по одной
       const results = [];
       for (const { variable_name, variable_value } of entries) {
         try {

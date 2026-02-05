@@ -2,13 +2,20 @@
 
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
-import { sendpulseTelegramSendText } from "./sendpulse-api.js";
+import { sendpulseTelegramSendText, sendpulseTelegramSendButtons } from "./sendpulse-api.js";
 import { setTgMap } from "../access/tg-map-store.js";
 
 // путь как у тебя сейчас
 import { getHistory, pushToHistory, clearHistory } from "../src/memory/memory-store.js";
 
-import { checkAndConsumeQuota } from "../access/access-store.js";
+import {
+  checkAndConsumeQuota,
+  getAccess,
+  setAccess,
+  markPaywallShown,
+  markUnlimitedUpsellShown,
+  consumeDueFollowups,
+} from "../access/access-store.js";
 
 // ---------- helpers ----------
 function getEvent(payload) {
@@ -20,7 +27,7 @@ function safeStr(x) {
 }
 
 // --- PROMO TIMER ---
-const PROMO_UNTIL_ISO = process.env.PROMO_UNTIL_ISO || "2026-02-04T23:59:59+03:00"; 
+const PROMO_UNTIL_ISO = process.env.PROMO_UNTIL_ISO || "2026-02-04T23:59:59+03:00";
 // (до конца дня 4 февраля по Москве)
 
 function isPromoActive() {
@@ -88,6 +95,106 @@ function decodeHtmlEntities(s = "") {
     .replaceAll("&gt;", ">");
 }
 
+// ---------- TEXTS (СТРОГО ТВОИ) ----------
+const PAYWALL_AFTER_2_TEXT = [
+  "Ты подошёл к тому моменту,",
+  "когда разговор обычно",
+  "либо обрывают ✋",
+  "либо продолжают — по-настоящему 🔥",
+  "Следующий ответ",
+  "соберёт то, что сейчас только нащупано 🧩✨",
+  "",
+  "Ты можешь остановиться здесь ⏸",
+  "",
+  "Или продолжить разговор",
+  "без пауз 👇🏻💬",
+].join("\n");
+
+const DIALOG_PAUSED_TEXT = [
+  "Диалог приостановлен ⏸",
+  "",
+  "Ты можешь вернуться, когда будешь готов 🌿",
+].join("\n");
+
+const BASIC_PITCH_TEXT = [
+  "Доведи этот разговор до ясности прямо сейчас!",
+  "Этот формат — для тех,",
+  "кто хочет не просто получить ответ 💬",
+  "а понять, что происходит на самом деле ещё глубже 🧩",
+  "",
+  "Ты получишь ответы",
+  "без шаблонов и общих советов 🧠",
+  "",
+  "Вместе с разговором мы подарим БОНУС - полный разбор твоего знака —",
+  "подробный PDF на 20+ страниц 📘",
+  "Это личная карта твоей жизни:",
+  "с кем тебе лучше строить близость и любовь ❤️",
+  "как найти своё предназначение 🎯",
+  "где и как зарабатывать деньги 💼💸",
+  "и в чём твоя истинная  миссия ✨",
+  "",
+  "Разговор даёт рост и сдвиг 🔥",
+  "А разбор помогает удержать это понимание",
+  "и возвращаться к нему снова, когда жизнь задаёт новые вопросы 🌿🔁",
+].join("\n");
+
+const BASIC_95_WARN_TEXT = [
+  "Мы подходим к завершению этого разговора 🔚",
+  "",
+  "Я хочу собрать главное 🧩",
+  "и зафиксировать то,",
+  "что для тебя сейчас ключевое ✨",
+  "",
+  "💬Для более продуктивного завершения диалога напиши в бот ответы на вопросы:",
+  "",
+  "1️⃣ Что из этого разговора для тебя сейчас самое важное? 🧩",
+  "",
+  "2️⃣ Что стало яснее или встало на своё место? ✨",
+  "",
+  "3️⃣ Если ты вернёшься к разговору позже — про что он будет? 🔁💭",
+  "",
+  "4️⃣ В каком состоянии ты сейчас по сравнению с началом? 🌊",
+  "",
+  "5️⃣Если собрать всё в одну фразу — что ты понял(а)? 💬",
+].join("\n");
+
+const BASIC_100_END_TEXT = [
+  "Мы завершили этот разговор 😌",
+  "",
+  "Если ты захочешь разобрать другую тему или пойти глубже — можно начать новый диалог 💬✨",
+].join("\n");
+
+const UNLIMITED_NUDGE_TEXT = [
+  "Ты уже попробовал решить одну задачу 🧩",
+  "И, скорее всего, почувствовал,",
+  "что с этим ботом можно разбирать",
+  "не только большие вопросы,",
+  "но и самые повседневные 💬",
+  "",
+  "От глобального —",
+  "в какой сфере искать себя и работу 💼",
+  "до простого —",
+  "что надеть на свидание и как себя вести ❤️",
+  "",
+  "Безлимит — это формат,",
+  "в котором бот становится",
+  "твоим прикладным помощником по жизни 🌿",
+  "Ты встраиваешь его в свой день,",
+  "и решения даются легче,",
+  "потому что они учитывают",
+  "твои внутренние потребности и ритм 🧠✨",
+  "",
+  "🎁 Бонус сразу после оплаты:",
+  "ты получаешь 3 дополнительных файла 📂",
+  "— совместимость с другими знаками ❤️",
+  "— как раскрыть свою силу 💪",
+  "— формула успеха и богатства 💸✨",
+  "",
+  "⸻",
+  "",
+  "🔓 Открыть безлимитный формат",
+].join("\n");
+
 // ---------- PAYWALL ----------
 function buildPaywallText({ gate, mode = "auto" }) {
   if (mode === "manual") {
@@ -98,29 +205,35 @@ function buildPaywallText({ gate, mode = "auto" }) {
 
   if (reason === "paid_ended") {
     return [
-      "⛔ <b>Подписка закончилась.</b>",
-      "Чтобы продолжить — оформи подписку 👇",
+      "⛔ <b>Сейчас нет активного доступа.</b>",
+      "Чтобы продолжить — выбери формат ниже 👇",
       "",
       "<b>Доступы:</b>",
     ].join("\n");
   }
 
-if (reason === "trial_ended") {
-  return [
-    "⛔ <b>Бесплатный доступ завершён.</b>",
-    "",
-    "За первые 3 дня ты смог(ла) попробовать, как я работаю 🙂",
-    "",
-    "Если хочешь продолжить — выбери формат ниже.",
-    "",
-    "<b>Доступы:</b>",
-  ].join("\n");
-}
+  if (reason === "trial_ended") {
+    return [
+      "⛔ <b>Бесплатный доступ завершён.</b>",
+      "",
+      "Если хочешь продолжить — выбери формат ниже 👇",
+      "",
+      "<b>Доступы:</b>",
+    ].join("\n");
+  }
 
-  // daily_limit
+  if (reason === "daily_limit") {
+    return [
+      "⛔ <b>Лимит сообщений исчерпан.</b>",
+      "Чтобы продолжить разговор без остановок — выбери формат ниже 👇",
+      "",
+      "<b>Доступы:</b>",
+    ].join("\n");
+  }
+
   return [
-    "⛔ <b>Дневной лимит вопросов исчерпан.</b>",
-    "Завтра снова будут доступны 3 вопроса 👇",
+    "⛔ <b>Ограничение доступа.</b>",
+    "Чтобы продолжить — выбери формат ниже 👇",
     "",
     "<b>Доступы:</b>",
   ].join("\n");
@@ -137,14 +250,22 @@ function getPublicBaseUrl(req) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-function getPayLinks(req, contactId) {
-  const base = getPublicBaseUrl(req);
-  if (!base) return { basic: null, unlimited: null };
+function getPublicBaseUrlEnvOnly() {
+  const envBase = safeStr(process.env.PUBLIC_BASE_URL);
+  return envBase ? envBase.replace(/\/$/, "") : "";
+}
 
+function getPayLinksBase(base, contactId) {
+  if (!base) return { basic: null, unlimited: null };
   return {
     basic: `${base}/pay/basic?cid=${encodeURIComponent(contactId)}`,
     unlimited: `${base}/pay/unlimited?cid=${encodeURIComponent(contactId)}`,
   };
+}
+
+function getPayLinks(req, contactId) {
+  const base = getPublicBaseUrl(req);
+  return getPayLinksBase(base, contactId);
 }
 
 async function sendPaywall(req, contactId, gate, mode = "auto") {
@@ -163,28 +284,107 @@ async function sendPaywall(req, contactId, gate, mode = "auto") {
   }
 
   const header = buildPaywallText({ gate, mode });
+  const promo = isPromoActive();
 
-const promo = isPromoActive();
+  const priceLines = promo
+    ? [
+        `• <s>990 ₽</s> <b>490 ₽</b> — 100 вопросов на 1 месяц: <a href="${basic}">Оплатить</a>`,
+        `• <s>2990 ₽</s> <b>1990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
+        `\n⏳ <i>Скидка действует до 4 февраля 2026</i>`,
+      ]
+    : [
+        `• <b>990 ₽</b> — 100 вопросов на 1 месяц: <a href="${basic}">Оплатить</a>`,
+        `• <b>2990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
+      ];
 
-const priceLines = promo
-  ? [
-      `• <s>990 ₽</s> <b>490 ₽</b> — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
-      `• <s>2990 ₽</s> <b>1990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
-      `\n⏳ <i>Скидка действует до 4 февраля 2026</i>`,
-    ]
-  : [
-      `• <b>990 ₽</b> — 3 вопроса в день: <a href="${basic}">Оплатить</a>`,
-      `• <b>2990 ₽</b> — безлимит: <a href="${unlimited}">Оплатить</a>`,
-    ];
+  const out = [header, ...priceLines].join("\n");
+  await sendpulseTelegramSendText({ contactId, text: out });
+}
 
-const text = [header, ...priceLines].join("\n");
+// ✅ НАСТОЯЩИЕ INLINE-КНОПКИ
+async function sendBasicPayButton(req, contactId, prefixText = "") {
+  const { basic } = getPayLinks(req, contactId);
+  if (!basic) return;
 
-  await sendpulseTelegramSendText({ contactId, text });
+  return sendpulseTelegramSendButtons({
+    contactId,
+    text: String(prefixText ?? ""),
+    buttons: [{ text: "Оплатить BASIC", url: basic }],
+  });
+}
+
+async function sendUnlimitedPayButton(req, contactId, prefixText = "") {
+  const { unlimited } = getPayLinks(req, contactId);
+  if (!unlimited) return;
+
+  return sendpulseTelegramSendButtons({
+    contactId,
+    text: String(prefixText ?? ""),
+    buttons: [{ text: "Открыть безлимит", url: unlimited }],
+  });
+}
+
+// ---------- FOLLOW-UP SCHEDULER (из access-store) ----------
+let __followupSchedulerStarted = false;
+function startFollowupSchedulerOnce() {
+  if (__followupSchedulerStarted) return;
+  __followupSchedulerStarted = true;
+
+  const base = getPublicBaseUrlEnvOnly();
+  if (!base) {
+    console.warn("FOLLOWUP: PUBLIC_BASE_URL not set; follow-ups will be skipped.");
+    return;
+  }
+
+  // каждые 30 секунд проверяем, кому пора отправить догоняющее
+  setInterval(async () => {
+    try {
+      const due = consumeDueFollowups();
+
+      // 1) +5 минут после paywall: "Диалог приостановлен" + КНОПКА BASIC
+      for (const contactId of due.paywallPause || []) {
+        const { basic } = getPayLinksBase(base, contactId);
+        if (!basic) continue;
+
+        await sendpulseTelegramSendButtons({
+          contactId,
+          text: DIALOG_PAUSED_TEXT,
+          buttons: [{ text: "Оплатить BASIC", url: basic }],
+        });
+      }
+
+      // 2) +10 минут после paywall: "Доведи разговор..." + КНОПКА BASIC
+      for (const contactId of due.paywallPitch || []) {
+        const { basic } = getPayLinksBase(base, contactId);
+        if (!basic) continue;
+
+        await sendpulseTelegramSendButtons({
+          contactId,
+          text: BASIC_PITCH_TEXT,
+          buttons: [{ text: "Оплатить BASIC", url: basic }],
+        });
+      }
+
+      // 3) +5 минут после upsell безлимита: длинное сообщение + КНОПКА UNLIMITED
+      for (const contactId of due.unlimited || []) {
+        const { unlimited } = getPayLinksBase(base, contactId);
+        if (!unlimited) continue;
+
+        await sendpulseTelegramSendButtons({
+          contactId,
+          text: UNLIMITED_NUDGE_TEXT,
+          buttons: [{ text: "Открыть безлимит", url: unlimited }],
+        });
+      }
+    } catch (e) {
+      console.error("FOLLOWUP_SCHEDULER_ERROR:", e);
+    }
+  }, 30_000);
 }
 
 // ---------- main ----------
 export async function handleSendpulseWebhook(req, res) {
-  // SendPulse нужно быстрое 200 OK
+  startFollowupSchedulerOnce();
   res.status(200).json({ ok: true });
 
   try {
@@ -223,50 +423,79 @@ export async function handleSendpulseWebhook(req, res) {
 
     if (lower === "/reset") {
       clearHistory(contactId);
+
+      // Важно: paywall_hold_notified — тоже сбросим, чтобы блокировка/уведомление работали корректно
+      setAccess(contactId, {
+        bot_answers_count: 0,
+
+        paywall_shown: false,
+        paywall_hold_notified: false,
+        paywall_pause_due_at: null,
+        paywall_pause_sent: false,
+        paywall_pitch_due_at: null,
+        paywall_pitch_sent: false,
+
+        unlimited_upsell_shown: false,
+        unlimited_nudge_due_at: null,
+        unlimited_nudge_sent: false,
+      });
+
       await sendpulseTelegramSendText({
         contactId,
         text: "Ок, очистила контекст 🧼",
       });
       return;
     }
-// 🔐 ADMIN: снять безлимит у себя
-if (lower === "/remove_unlimited") {
-  const adminTgId = String(process.env.ADMIN_TG_ID || "").trim();
 
-  if (!adminTgId) {
-    await sendpulseTelegramSendText({
-      contactId,
-      text: "ADMIN_TG_ID не задан в env",
-    });
-    return;
-  }
+    // 🔐 ADMIN: снять безлимит у себя
+    if (lower === "/remove_unlimited") {
+      const adminTgId = String(process.env.ADMIN_TG_ID || "").trim();
 
-  const tgId = extractTelegramUserId(event);
+      if (!adminTgId) {
+        await sendpulseTelegramSendText({
+          contactId,
+          text: "ADMIN_TG_ID не задан в env",
+        });
+        return;
+      }
 
-  if (String(tgId) !== adminTgId) {
-    await sendpulseTelegramSendText({
-      contactId,
-      text: "⛔ Команда недоступна",
-    });
-    return;
-  }
+      const tgId2 = extractTelegramUserId(event);
 
-  // снимаем доступ
-  const { setAccess } = await import("../access/access-store.js");
+      if (String(tgId2) !== adminTgId) {
+        await sendpulseTelegramSendText({
+          contactId,
+          text: "⛔ Команда недоступна",
+        });
+        return;
+      }
 
-  setAccess(contactId, {
-    plan: null,
-    paid_until: null,
-    daily_used: 0,
-  });
+      setAccess(contactId, {
+        plan: null,
+        paid_until: null,
+        daily_used: 0,
+        dialog_used: 0,
 
-  await sendpulseTelegramSendText({
-    contactId,
-    text: "✅ Безлимит снят. Ты снова в обычном режиме.",
-  });
+        bot_answers_count: 0,
 
-  return;
-}
+        paywall_shown: false,
+        paywall_hold_notified: false,
+        paywall_pause_due_at: null,
+        paywall_pause_sent: false,
+        paywall_pitch_due_at: null,
+        paywall_pitch_sent: false,
+
+        unlimited_upsell_shown: false,
+        unlimited_nudge_due_at: null,
+        unlimited_nudge_sent: false,
+      });
+
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "✅ Безлимит снят. Ты снова в обычном режиме.",
+      });
+
+      return;
+    }
 
     // "оплата" — показываем ссылки без расхода лимита
     if (lower === "оплата" || lower === "/pay") {
@@ -276,20 +505,42 @@ if (lower === "/remove_unlimited") {
 
     // -------- limits BEFORE GPT --------
     const gate = checkAndConsumeQuota(contactId);
-    console.log("GATE:", { contactId, plan: gate.plan, ok: gate.ok, left: gate.left, reason: gate.reason, notify: gate.notify });
+    console.log("GATE:", {
+      contactId,
+      plan: gate.plan,
+      ok: gate.ok,
+      left: gate.left,
+      reason: gate.reason,
+      notify: gate.notify,
+      extra: gate.extra,
+    });
 
     // ✅ Unlimited: 150/день — молча не отвечаем
     if (!gate.ok && gate.reason === "silent_limit") {
       return;
     }
 
-    // ✅ Trial закончился: показываем paywall только один раз.
-    // Дальше access-store вернёт notify:false — и мы молчим.
+    // ✅ Trial закончился: показываем paywall только один раз. Дальше молчим.
     if (!gate.ok && gate.reason === "trial_ended" && gate.notify === false) {
       return;
     }
 
-    // Остальные случаи — показываем paywall
+    // ✅ PAYWALL HOLD: после 2-го ответа, пока не оплатил
+    // ТЗ: при попытке писать — показываем "Диалог приостановлен" (1 раз) + кнопку BASIC
+    if (!gate.ok && gate.reason === "paywall_hold") {
+      if (gate.notify) {
+        await sendBasicPayButton(req, contactId, DIALOG_PAUSED_TEXT);
+      }
+      return;
+    }
+
+    // ✅ BASIC закончился (после 100): снова покажем завершение + кнопку безлимита
+    if (!gate.ok && gate.reason === "dialog_limit") {
+      await sendUnlimitedPayButton(req, contactId, BASIC_100_END_TEXT);
+      return;
+    }
+
+    // Остальные случаи — показываем paywall (basic+unlimited)
     if (!gate.ok) {
       await sendPaywall(req, contactId, gate, "auto");
       return;
@@ -339,16 +590,41 @@ if (lower === "/remove_unlimited") {
     await sendpulseTelegramSendText({ contactId, text: out });
     pushToHistory(contactId, "assistant", answer);
 
+    // -------- after-send triggers --------
+    const rec = getAccess(contactId) || {};
+    const botAnswers = Number.isFinite(rec.bot_answers_count) ? rec.bot_answers_count : 0;
+    const newBotAnswers = botAnswers + 1;
+
+    setAccess(contactId, { bot_answers_count: newBotAnswers });
+
+    // ✅ После 2-го ответа — СТРОГО: только BASIC (и ставим follow-ups)
+    // Показываем только если у пользователя НЕТ активной оплаты (paid_until).
+    const hasPaid = Boolean(rec.paid_until);
+    if (!hasPaid && newBotAnswers === 2 && !rec.paywall_shown) {
+      await sendBasicPayButton(req, contactId, PAYWALL_AFTER_2_TEXT);
+      markPaywallShown(contactId);
+    }
+
+    // BASIC: предупреждение на 95-м
+    if (gate?.extra === "warn95" && gate?.notify) {
+      await sendpulseTelegramSendText({ contactId, text: BASIC_95_WARN_TEXT });
+    }
+
+    // BASIC: завершение на 100-м + кнопка безлимита + follow-up через 5 минут
+    if (gate?.extra === "end100" && gate?.notify) {
+      await sendUnlimitedPayButton(req, contactId, BASIC_100_END_TEXT);
+      markUnlimitedUpsellShown(contactId);
+    }
+
     console.log("OK_REPLY:", { contactId, partnerSign, confidence: parsed?.confidence });
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
-    // если можем — скажем пользователю, что был сбой
     try {
       const event = getEvent(req.body);
-      const contactId = extractContactId(event);
-      if (contactId) {
+      const contactId2 = extractContactId(event);
+      if (contactId2) {
         await sendpulseTelegramSendText({
-          contactId,
+          contactId: contactId2,
           text: "Упс, что-то пошло не так. Попробуй повторить сообщение 🙏",
         });
       }

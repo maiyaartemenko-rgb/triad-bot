@@ -102,7 +102,8 @@ app.get("/debug/access", (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
- app.get("/debug/tg-map", (req, res) => {
+
+app.get("/debug/tg-map", (req, res) => {
   try {
     const file = "/data/tg-map.json";
     if (!fs.existsSync(file)) {
@@ -119,11 +120,9 @@ app.get("/debug/access", (req, res) => {
   }
 });
 
-
 // ---------- SENDPULSE WEBHOOK ----------
 app.post("/sendpulse/webhook", handleSendpulseWebhook);
 
-// ---------- TRIBUTE WEBHOOK ----------
 // ---------- TRIBUTE WEBHOOK (ROBUST) ----------
 
 // отдельные парсеры ТОЛЬКО для webhook,
@@ -146,8 +145,6 @@ function safeJsonParseMaybe(str) {
 }
 
 async function tributeWebhook(req, res) {
-  // Tribute обычно ждёт 200 быстро
-  // (но мы всё равно успеем обработать — тут логика лёгкая)
   try {
     const headers = req.headers || {};
     const q = req.query || {};
@@ -221,8 +218,6 @@ async function tributeWebhook(req, res) {
     }
 
     if (!contactId) {
-      // ВАЖНО: это частая причина "оплатил, но доступа нет":
-      // пользователь НЕ писал боту до оплаты => tg-map пустой.
       return res.status(200).json({
         ok: false,
         error: "contactId_not_found",
@@ -242,24 +237,52 @@ async function tributeWebhook(req, res) {
     // 5) paid_until
     const paid_until = b?.payload?.expires_at || b?.expires_at || addDaysISO(30);
 
+    // ✅ ВАЖНО: после оплаты очищаем все "догонялки",
+    // чтобы человеку не прилетели "пауза/питч" или "догон безлимита" уже после оплаты.
+    const clearFollowups = {
+      paywall_shown: false,
+
+      paywall_pause_due_at: null,
+      paywall_pause_sent: false,
+      paywall_pitch_due_at: null,
+      paywall_pitch_sent: false,
+
+      unlimited_upsell_shown: false,
+      unlimited_nudge_due_at: null,
+      unlimited_nudge_sent: false,
+    };
+
+    // ✅ Для BASIC логично начинать лимит 100 сообщений "с нуля" на момент оплаты
+    const resetBasicCounters =
+      plan === "basic"
+        ? {
+            dialog_used: 0,
+            dialog_warn95_sent: false,
+            dialog_end100_sent: false,
+          }
+        : {};
+
     setAccess(contactId, {
       plan,
       paid_until,
+
+      // unlimited использует дневной счётчик
       daily_used: 0,
       last_reset_date: new Date().toISOString().slice(0, 10),
+
+      ...clearFollowups,
+      ...resetBasicCounters,
     });
 
     return res.status(200).json({ ok: true, contactId, plan, paid_until });
   } catch (e) {
     console.error("TRIBUTE_WEBHOOK_ERROR:", e);
-    // даже при ошибке лучше вернуть 200, чтобы Tribute не долбил ретраями бесконечно
     return res.status(200).json({ ok: false, error: String(e?.message || e) });
   }
 }
 
 // принимаем ВСЁ: GET/POST и любой content-type
 app.all("/tribute/webhook", tributeBodyParsers, tributeWebhook);
-
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
