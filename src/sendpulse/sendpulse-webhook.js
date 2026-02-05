@@ -600,21 +600,47 @@ export async function handleSendpulseWebhook(req, res) {
     // ✅ После 2-го ответа — СТРОГО: только BASIC (и ставим follow-ups)
     // Показываем только если у пользователя НЕТ активной оплаты (paid_until).
     const hasPaid = Boolean(rec.paid_until);
-    if (!hasPaid && newBotAnswers === 2 && !rec.paywall_shown) {
-      await sendBasicPayButton(req, contactId, PAYWALL_AFTER_2_TEXT);
-      markPaywallShown(contactId);
+if (!hasPaid && newBotAnswers === 2 && !rec.paywall_shown) {
+  try {
+    await sendBasicPayButton(req, contactId, PAYWALL_AFTER_2_TEXT);
+  } catch (e) {
+    console.error("PAYWALL_BUTTON_SEND_ERROR:", e);
+    // fallback: текстовая ссылка, чтобы не было "Упс"
+    const { basic } = getPayLinks(req, contactId);
+    if (basic) {
+      await sendpulseTelegramSendText({
+        contactId,
+        text: `${PAYWALL_AFTER_2_TEXT}\n\n👉 <a href="${basic}">Оплатить BASIC</a>`,
+      });
     }
+  }
+
+  // важно: ставим флаг paywall даже если кнопка не ушла
+  markPaywallShown(contactId);
+}
+
 
     // BASIC: предупреждение на 95-м
     if (gate?.extra === "warn95" && gate?.notify) {
       await sendpulseTelegramSendText({ contactId, text: BASIC_95_WARN_TEXT });
     }
 
-    // BASIC: завершение на 100-м + кнопка безлимита + follow-up через 5 минут
-    if (gate?.extra === "end100" && gate?.notify) {
-      await sendUnlimitedPayButton(req, contactId, BASIC_100_END_TEXT);
-      markUnlimitedUpsellShown(contactId);
+if (gate?.extra === "end100" && gate?.notify) {
+  try {
+    await sendUnlimitedPayButton(req, contactId, BASIC_100_END_TEXT);
+  } catch (e) {
+    console.error("UNLIMITED_BUTTON_SEND_ERROR:", e);
+    const { unlimited } = getPayLinks(req, contactId);
+    if (unlimited) {
+      await sendpulseTelegramSendText({
+        contactId,
+        text: `${BASIC_100_END_TEXT}\n\n👉 <a href="${unlimited}">Открыть безлимит</a>`,
+      });
     }
+  }
+  markUnlimitedUpsellShown(contactId);
+}
+
 
     console.log("OK_REPLY:", { contactId, partnerSign, confidence: parsed?.confidence });
   } catch (err) {
