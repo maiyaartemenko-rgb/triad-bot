@@ -7,6 +7,7 @@ import { triadChat } from "./src/triad/triad-openai.js";
 import { handleSendpulseWebhook } from "./src/sendpulse/sendpulse-webhook.js";
 import { setAccess } from "./src/access/access-store.js";
 import { getContactIdByTgId } from "./src/access/tg-map-store.js";
+import { sendpulseTelegramSendText } from "./src/sendpulse/sendpulse-api.js";
 
 dotenv.config();
 
@@ -273,6 +274,24 @@ async function tributeWebhook(req, res) {
       ...clearFollowups,
       ...resetBasicCounters,
     });
+
+// ✅ Сообщение после успешной оплаты
+try {
+  const planName = plan === "basic" ? "BASIC (100 сообщений на 30 дней)" : "БЕЗЛИМИТ";
+  const msg = [
+    "✅ Оплата прошла! Доступ активирован.",
+    "",
+    `Твой тариф: <b>${planName}</b>`,
+    `Доступ активен до: <b>${new Date(paid_until).toLocaleString("ru-RU")}</b>`,
+    "",
+    "📩 Файлы/бонусы мы пришлём в течение <b>1 суток</b> после оплаты.",
+  ].join("\n");
+
+  await sendpulseTelegramSendText({ contactId, text: msg });
+} catch (e) {
+  console.error("POSTPAY_MESSAGE_ERROR:", e);
+}
+
 
     return res.status(200).json({ ok: true, contactId, plan, paid_until });
   } catch (e) {
