@@ -1,45 +1,60 @@
+
 // src/access/access-store.js
 import fs from "node:fs";
 import path from "node:path";
 
 // Render persistent disk обычно смонтирован в /data
 const RENDER_FILE = "/data/access.json";
-// Локально — ./data/access.json
 const LOCAL_FILE = path.resolve(process.cwd(), "data/access.json");
 
 // ✅ всегда пишем в /data если он доступен, иначе локально
 const FILE = fs.existsSync("/data") ? RENDER_FILE : LOCAL_FILE;
 
-// ✅ BASIC: 100 сообщений (вопросов) за 30 дней (в рамках paid_until), без дневных лимитов
+// --- limits ---
 const BASIC_DIALOG_LIMIT = 100;
-
-// UNLIMITED: оставляем как было (150/день). Если надо реально "безлимит", поставь Infinity и убери silent_limit ниже.
 const UNLIMITED_DAILY_LIMIT = 150;
-
-// Триал
 const TRIAL_DAILY_LIMIT = 3;
 const TRIAL_DAYS = 3;
 
-// Follow-ups (СТРОГО ПО ТЗ)
-// После paywall (после 2-го ответа): через 5 мин "Диалог приостановлен", ещё через 5 мин "Доведи разговор..."
-const PAYWALL_PAUSE_DELAY_MS = 5 * 60 * 1000; // +5 минут
-const PAYWALL_PITCH_DELAY_MS = 10 * 60 * 1000; // +10 минут (ещё 5 минут после паузы)
+// Follow-ups
+const PAYWALL_PAUSE_DELAY_MS = 5 * 60 * 1000;
+const PAYWALL_PITCH_DELAY_MS = 10 * 60 * 1000;
+const UNLIMITED_NUDGE_DELAY_MS = 5 * 60 * 1000;
 
-// После upsell безлимита (после 100-го): через 5 минут догон
-const UNLIMITED_NUDGE_DELAY_MS = 5 * 60 * 1000; // +5 минут
+// ✅ атомарная запись: пишем во временный файл -> rename
+function safeSave(db) {
+  fs.mkdirSync(path.dirname(FILE), { recursive: true });
 
+  const tmp = `${FILE}.tmp`;
+  const data = JSON.stringify(db, null, 2);
+
+  fs.writeFileSync(tmp, data, "utf8");
+  fs.renameSync(tmp, FILE);
+}
+
+// ✅ если JSON битый — НЕ затираем его молча, а сохраняем копию corrupt
 function safeLoad() {
   try {
     const txt = fs.readFileSync(FILE, "utf8");
-    return JSON.parse(txt);
-  } catch {
+    const parsed = JSON.parse(txt);
+
+    // лёгкая валидация структуры
+    if (!parsed || typeof parsed !== "object") return { users: {} };
+    if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
+    return parsed;
+  } catch (e) {
+    // если файл существует и он битый — сохраняем его под другим именем
+    try {
+      if (fs.existsSync(FILE)) {
+        const corruptName = `${FILE}.corrupt.${Date.now()}`;
+        fs.renameSync(FILE, corruptName);
+        console.error("ACCESS_DB_CORRUPT: moved to", corruptName);
+      }
+    } catch (e2) {
+      console.error("ACCESS_DB_CORRUPT_RENAME_FAILED:", e2);
+    }
     return { users: {} };
   }
-}
-
-function safeSave(db) {
-  fs.mkdirSync(path.dirname(FILE), { recursive: true });
-  fs.writeFileSync(FILE, JSON.stringify(db, null, 2), "utf8");
 }
 
 export function getAccess(contactId) {
@@ -54,6 +69,7 @@ export function setAccess(contactId, data) {
   safeSave(db);
   return db.users[key];
 }
+
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
