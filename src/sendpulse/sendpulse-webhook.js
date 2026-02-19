@@ -115,7 +115,6 @@ const OFFER_AFTER_2_TEXT = [
   "",
   "Ты продолжишь разговор со мной и получишь подробный разбор своей ситуации + PDF с описанием твоего типа 📘👇",
   "",
-  "🔘 Получить полный разбор — 1490 ₽",
 ].join("\n");
 
 // твой 95
@@ -522,10 +521,10 @@ export async function handleSendpulseWebhook(req, res) {
     const hasPaid0 = Boolean(rec0.paid_until);
     const botAnswers0 = Number.isFinite(rec0.bot_answers_count) ? rec0.bot_answers_count : 0;
 
-    if (!hasPaid0 && (rec0.paywall_shown || botAnswers0 >= 2)) {
-      await sendOfferWithPayLink(req, contactId);
-      return;
-    }
+ if (!hasPaid0 && botAnswers0 >= 2) {
+  await sendOfferWithPayLink(req, contactId);
+  return;
+}
 
     // -------- limits BEFORE GPT --------
     const gate = checkAndConsumeQuota(contactId);

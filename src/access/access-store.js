@@ -125,6 +125,7 @@ function planLimit(rec) {
 export function ensureUserRecord(contactId) {
   const key = String(contactId);
   const existing = getAccess(key);
+
   if (existing) return existing;
 
   return setAccess(key, {
@@ -134,6 +135,7 @@ export function ensureUserRecord(contactId) {
     // trial
     trial_started_at: new Date().toISOString(),
     last_reset_date: todayStr(),
+    bot_answers_count: 0,
     daily_used: 0,
     trial_end_notified: false,
 
