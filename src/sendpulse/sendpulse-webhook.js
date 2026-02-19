@@ -14,6 +14,7 @@ import {
   getAccess,
   setAccess,
   markUnlimitedUpsellShown,
+  deleteAccess,
 } from "../access/access-store.js";
 
 // ---------- helpers ----------
@@ -485,30 +486,22 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    // 🔐 /reset только для админа — сброс "как новый" для СЕБЯ
-    if (lower === "/reset") {
-      if (!isAdmin(event)) {
-        await sendpulseTelegramSendText({ contactId, text: "⛔ Команда недоступна" });
-        return;
-      }
+// 🔐 /reset только для админа — сброс "как новый"
+if (lower === "/reset") {
+  if (!isAdmin(event)) {
+    await sendpulseTelegramSendText({ contactId, text: "⛔ Команда недоступна" });
+    return;
+  }
 
-      clearHistory(contactId);
+  try { clearHistory(contactId); } catch {}
+  deleteAccess(contactId);
 
-      setAccess(contactId, {
-        plan: null,
-        paid_until: null,
-        daily_used: 0,
-        dialog_used: 0,
-        bot_answers_count: 0,
-        paywall_shown: false,
-        paywall_hold_notified: false,
-        dialog_warn95_sent: false,
-        dialog_end100_sent: false,
-      });
-
-      await sendpulseTelegramSendText({ contactId, text: "✅ Сбросила состояние для этого контакта." });
-      return;
-    }
+  await sendpulseTelegramSendText({
+    contactId,
+    text: "✅ Полный сброс сделан. Теперь ты как новый пользователь.",
+  });
+  return;
+}
 
     // /pay — показать ссылку
     if (lower === "оплата" || lower === "/pay") {

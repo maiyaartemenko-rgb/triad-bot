@@ -411,3 +411,13 @@ export function resetDialogCounters(contactId) {
 
   return setAccess(contactId, rec);
 }
+
+export function deleteAccess(contactId) {
+  const db = safeLoad();
+  const key = String(contactId);
+  if (db.users && db.users[key]) {
+    delete db.users[key];
+    safeSave(db);
+  }
+  return true;
+}
