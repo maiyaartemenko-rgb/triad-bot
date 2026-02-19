@@ -1,4 +1,3 @@
-
 // src/access/access-store.js
 import fs from "node:fs";
 import path from "node:path";
@@ -16,43 +15,60 @@ const UNLIMITED_DAILY_LIMIT = 150;
 const TRIAL_DAILY_LIMIT = 3;
 const TRIAL_DAYS = 3;
 
-// Follow-ups
+// Follow-ups (оставляем — вдруг вернёшь; сейчас можно не использовать)
 const PAYWALL_PAUSE_DELAY_MS = 5 * 60 * 1000;
 const PAYWALL_PITCH_DELAY_MS = 10 * 60 * 1000;
 const UNLIMITED_NUDGE_DELAY_MS = 5 * 60 * 1000;
+
+function ensureDbShape(db) {
+  if (!db || typeof db !== "object") return { users: {} };
+  if (!db.users || typeof db.users !== "object") db.users = {};
+  return db;
+}
 
 // ✅ атомарная запись: пишем во временный файл -> rename
 function safeSave(db) {
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
 
   const tmp = `${FILE}.tmp`;
-  const data = JSON.stringify(db, null, 2);
+  const data = JSON.stringify(ensureDbShape(db), null, 2);
 
   fs.writeFileSync(tmp, data, "utf8");
   fs.renameSync(tmp, FILE);
 }
 
-// ✅ если JSON битый — НЕ затираем его молча, а сохраняем копию corrupt
+/**
+ * ✅ ВАЖНО: НЕ переименовываем основной файл на .corrupt.
+ * Потому что при ручной правке/частичном сохранении ты получаешь "данные исчезли".
+ *
+ * Вместо этого:
+ *  - если JSON битый, делаем COPY в *.corrupt.* (для диагностики)
+ *  - основной файл оставляем как есть
+ *  - возвращаем пустую базу { users: {} }
+ */
 function safeLoad() {
   try {
-    const txt = fs.readFileSync(FILE, "utf8");
-    const parsed = JSON.parse(txt);
+    if (!fs.existsSync(FILE)) return { users: {} };
 
-    // лёгкая валидация структуры
-    if (!parsed || typeof parsed !== "object") return { users: {} };
-    if (!parsed.users || typeof parsed.users !== "object") parsed.users = {};
-    return parsed;
+    const txt = fs.readFileSync(FILE, "utf8");
+
+    // пустой файл = частая ситуация при ручной правке
+    if (!String(txt || "").trim()) return { users: {} };
+
+    const parsed = JSON.parse(txt);
+    return ensureDbShape(parsed);
   } catch (e) {
-    // если файл существует и он битый — сохраняем его под другим именем
     try {
       if (fs.existsSync(FILE)) {
-        const corruptName = `${FILE}.corrupt.${Date.now()}`;
-        fs.renameSync(FILE, corruptName);
-        console.error("ACCESS_DB_CORRUPT: moved to", corruptName);
+        const corruptCopy = `${FILE}.corrupt.${Date.now()}`;
+        // copy, а не rename
+        fs.copyFileSync(FILE, corruptCopy);
+        console.error("ACCESS_DB_CORRUPT: copied to", corruptCopy);
       }
     } catch (e2) {
-      console.error("ACCESS_DB_CORRUPT_RENAME_FAILED:", e2);
+      console.error("ACCESS_DB_CORRUPT_COPY_FAILED:", e2);
     }
+    console.error("ACCESS_DB_LOAD_ERROR:", e);
     return { users: {} };
   }
 }
@@ -70,8 +86,8 @@ export function setAccess(contactId, data) {
   return db.users[key];
 }
 
-
 function todayStr() {
+  // UTC день — ок для Render
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -96,10 +112,13 @@ function isPaidActive(rec) {
 function planLimit(rec) {
   if (!rec) return 0;
 
+  // paid plans
   if (rec.plan === "unlimited") return isPaidActive(rec) ? UNLIMITED_DAILY_LIMIT : 0;
   if (rec.plan === "basic") return isPaidActive(rec) ? BASIC_DIALOG_LIMIT : 0;
 
+  // trial
   if (isTrialActive(rec)) return TRIAL_DAILY_LIMIT;
+
   return 0;
 }
 
@@ -123,23 +142,23 @@ export function ensureUserRecord(contactId) {
     dialog_warn95_sent: false,
     dialog_end100_sent: false,
 
-    // PAYWALL FLOW (после 2-го ответа)
+    // PAYWALL / OFFER MODE (после 2-го ответа)
     paywall_shown: false,
-
-    // ✅ жесткая блокировка после paywall, чтобы бот не продолжал отвечать
-    // notify=true один раз, дальше notify=false (чтобы не спамить)
     paywall_hold_notified: false,
 
-    // ✅ follow-ups после paywall (2 шага)
+    // follow-ups (если захочешь вернуть)
     paywall_pause_due_at: null,
     paywall_pause_sent: false,
     paywall_pitch_due_at: null,
     paywall_pitch_sent: false,
 
-    // ✅ upsell unlimited (после 100-го)
+    // upsell unlimited
     unlimited_upsell_shown: false,
     unlimited_nudge_due_at: null,
     unlimited_nudge_sent: false,
+
+    // счётчик ответов бота (для “после 2-го”)
+    bot_answers_count: 0,
   });
 }
 
@@ -150,12 +169,12 @@ export function ensureUserRecord(contactId) {
  * plan: "trial" | "basic" | "unlimited" | null
  * reason:
  *  - null
- *  - "paywall_hold" (после 2-го ответа, пока не оплатил BASIC)
- *  - "daily_limit" (trial/unlimited)
+ *  - "paywall_hold"
+ *  - "daily_limit"
  *  - "trial_ended"
  *  - "paid_ended"
- *  - "silent_limit" (unlimited как было)
- *  - "dialog_limit" (basic >100)
+ *  - "silent_limit"
+ *  - "dialog_limit"
  * notify: true|false
  * extra: null | "warn95" | "end100"
  */
@@ -163,41 +182,37 @@ export function checkAndConsumeQuota(contactId) {
   const rec = ensureUserRecord(contactId);
   const dayNow = todayStr();
 
-  // 1) если подписка истекла — сбрасываем план
-  let paidJustEnded = false;
+  // 1) если подписка истекла — сбрасываем план (и счетчики)
   if ((rec.plan === "basic" || rec.plan === "unlimited") && rec.paid_until) {
     const untilMs = new Date(rec.paid_until).getTime();
     if (Number.isFinite(untilMs) && untilMs <= Date.now()) {
-      paidJustEnded = true;
       rec.plan = null;
       rec.paid_until = null;
 
-      // сброс диалога
+      rec.daily_used = 0;
+
       rec.dialog_used = 0;
       rec.dialog_warn95_sent = false;
       rec.dialog_end100_sent = false;
 
-      // сброс paywall flow
       rec.paywall_shown = false;
       rec.paywall_hold_notified = false;
 
       rec.paywall_pause_due_at = null;
       rec.paywall_pause_sent = false;
-
       rec.paywall_pitch_due_at = null;
       rec.paywall_pitch_sent = false;
 
-      // сброс unlimited followup
       rec.unlimited_upsell_shown = false;
       rec.unlimited_nudge_due_at = null;
       rec.unlimited_nudge_sent = false;
 
-      // сброс trial/day
-      rec.daily_used = 0;
+      setAccess(contactId, rec);
+      return { ok: false, left: 0, plan: null, reason: "paid_ended", notify: true, extra: null };
     }
   }
 
-  // 2) новый день → сбрасываем дневной счётчик (trial/unlimited)
+  // 2) новый день → сброс дневного счётчика
   if (rec.last_reset_date !== dayNow) {
     rec.last_reset_date = dayNow;
     rec.daily_used = 0;
@@ -207,28 +222,19 @@ export function checkAndConsumeQuota(contactId) {
   const paidActive = isPaidActive(rec);
   const limit = planLimit(rec);
 
-  // ✅ PAYWALL HOLD: после 2-го ответа — пока нет активного платного плана, бот НЕ отвечает
-  // Важно: не тратим trial/daily лимиты в этом состоянии.
+  // ✅ PAYWALL HOLD (режим оффера): если он включён и НЕТ активного платного плана — блокируем GPT
+  // Важно: платным НЕ мешаем.
   const hasActivePaidPlan = (rec.plan === "basic" || rec.plan === "unlimited") && paidActive;
 
   if (rec.paywall_shown && !hasActivePaidPlan) {
     const shouldNotify = rec.paywall_hold_notified ? false : true;
     rec.paywall_hold_notified = true;
     setAccess(contactId, rec);
-
-    return {
-      ok: false,
-      left: 0,
-      plan: null,
-      reason: "paywall_hold",
-      notify: shouldNotify,
-      extra: null,
-    };
+    return { ok: false, left: 0, plan: null, reason: "paywall_hold", notify: shouldNotify, extra: null };
   }
 
   // 3) если лимит 0 — нет доступа
   if (limit <= 0) {
-    // trial закончился
     if (!trialActive && !paidActive && !rec.plan) {
       const shouldNotify = rec.trial_end_notified ? false : true;
       rec.trial_end_notified = true;
@@ -236,7 +242,6 @@ export function checkAndConsumeQuota(contactId) {
       return { ok: false, left: 0, plan: null, reason: "trial_ended", notify: shouldNotify, extra: null };
     }
 
-    // paid закончился
     setAccess(contactId, rec);
     return { ok: false, left: 0, plan: null, reason: "paid_ended", notify: true, extra: null };
   }
@@ -287,14 +292,20 @@ export function checkAndConsumeQuota(contactId) {
 
     rec.daily_used += 1;
     setAccess(contactId, rec);
-    return { ok: true, left: UNLIMITED_DAILY_LIMIT - rec.daily_used, plan: "unlimited", reason: null, notify: false, extra: null };
+    return {
+      ok: true,
+      left: UNLIMITED_DAILY_LIMIT - rec.daily_used,
+      plan: "unlimited",
+      reason: null,
+      notify: false,
+      extra: null,
+    };
   }
 
   // 6) TRIAL
   if (rec.daily_used < limit) {
     rec.daily_used += 1;
     setAccess(contactId, rec);
-
     const planLabel = rec.plan || (trialActive ? "trial" : null);
     return { ok: true, left: limit - rec.daily_used, plan: planLabel, reason: null, notify: false, extra: null };
   }
@@ -304,22 +315,15 @@ export function checkAndConsumeQuota(contactId) {
   return { ok: false, left: 0, plan: rec.plan || (trialActive ? "trial" : null), reason: "daily_limit", notify: true, extra: null };
 }
 
-/**
- * ✅ Вызывать в момент, когда отправили paywall после 2-го ответа бота.
- * СТРОГО ПО ТЗ:
- *  - планирует через 5 минут "Диалог приостановлен"
- *  - ещё через 5 минут "Доведи этот разговор..."
- */
+// ---- followup exports (оставляю совместимость) ----
+
 export function markPaywallShown(contactId) {
   const rec = ensureUserRecord(contactId);
   const now = Date.now();
 
   rec.paywall_shown = true;
-
-  // ✅ сбрасываем, чтобы notify сработал 1 раз при следующем сообщении пользователя
   rec.paywall_hold_notified = false;
 
-  // планируем 2 follow-up
   rec.paywall_pause_due_at = new Date(now + PAYWALL_PAUSE_DELAY_MS).toISOString();
   rec.paywall_pause_sent = false;
 
@@ -329,10 +333,6 @@ export function markPaywallShown(contactId) {
   return setAccess(contactId, rec);
 }
 
-/**
- * ✅ Вызывать когда показали сообщение "Кнопка оплаты безлимита" (после 100-го).
- * СТРОГО ПО ТЗ: follow-up через 5 минут.
- */
 export function markUnlimitedUpsellShown(contactId) {
   const rec = ensureUserRecord(contactId);
   const now = Date.now();
@@ -344,13 +344,6 @@ export function markUnlimitedUpsellShown(contactId) {
   return setAccess(contactId, rec);
 }
 
-/**
- * ✅ Основная функция для планировщика в боте.
- * Возвращает, кому пора отправить follow-up, и помечает как sent.
- *
- * Возвращает:
- *  { paywallPause: [...], paywallPitch: [...], unlimited: [...] }
- */
 export function consumeDueFollowups() {
   const db = safeLoad();
   const nowMs = Date.now();
@@ -362,7 +355,6 @@ export function consumeDueFollowups() {
   for (const [contactId, rec] of Object.entries(db.users || {})) {
     if (!rec) continue;
 
-    // PAYWALL PAUSE (+5): только если paywall показан и человек всё ещё не оплатил
     if (rec.paywall_shown && !rec.paywall_pause_sent && rec.paywall_pause_due_at) {
       const dueMs = new Date(rec.paywall_pause_due_at).getTime();
       const stillNotPaid = !isPaidActive(rec);
@@ -372,7 +364,6 @@ export function consumeDueFollowups() {
       }
     }
 
-    // PAYWALL PITCH (+10): только если всё ещё не оплатил
     if (rec.paywall_shown && !rec.paywall_pitch_sent && rec.paywall_pitch_due_at) {
       const dueMs = new Date(rec.paywall_pitch_due_at).getTime();
       const stillNotPaid = !isPaidActive(rec);
@@ -382,7 +373,6 @@ export function consumeDueFollowups() {
       }
     }
 
-    // UNLIMITED NUDGE (+5): если upsell был показан и unlimited не активирован/не оплачен
     if (rec.unlimited_upsell_shown && !rec.unlimited_nudge_sent && rec.unlimited_nudge_due_at) {
       const dueMs = new Date(rec.unlimited_nudge_due_at).getTime();
       const unlimitedActive = rec.plan === "unlimited" && isPaidActive(rec);
@@ -397,10 +387,6 @@ export function consumeDueFollowups() {
   return { paywallPause: duePaywallPause, paywallPitch: duePaywallPitch, unlimited: dueUnlimited };
 }
 
-/**
- * ✅ Если у тебя есть "начать новый диалог" — вызови это.
- * (сбрасывает счётчик 95/100 и follow-ups)
- */
 export function resetDialogCounters(contactId) {
   const rec = ensureUserRecord(contactId);
 
