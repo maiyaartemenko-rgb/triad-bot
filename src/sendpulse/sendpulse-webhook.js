@@ -365,6 +365,32 @@ export async function handleSendpulseWebhook(req, res) {
     const answer = safeStr(result?.answer) || "Ок. Сформулируй вопрос чуть конкретнее 🙂";
     await sendpulseTelegramSendText({ contactId, text: decodeHtmlEntities(answer) });
     pushToHistory(contactId, "assistant", answer);
+    // ---------- after-send: count bot answers & trigger paywall after 2 ----------
+{
+  const rec = getAccess(contactId) || {};
+  const paid = isPaidActive(rec);
+  const micro = isMicroActive(rec);
+
+  // считаем ответы только если нет платного плана и не активен micro-цикл
+  if (!paid && !micro) {
+    const prev = Number.isFinite(rec.bot_answers_count) ? rec.bot_answers_count : 0;
+    const next = prev + 1;
+
+    setAccess(contactId, { bot_answers_count: next });
+
+    // ✅ после 2-го ответа — запускаем flow и включаем режим paywall
+    if (next >= 2 && !rec.paywall_shown) {
+      setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
+
+      // запускаем SendPulse-воронку с оплатой (в ней твой текст + кнопка)
+      await triggerStarsFlowIfConfigured(contactId);
+
+      // дальше: сервер уже будет молчать, потому что paywall_shown=true
+      // (следующее сообщение пользователя не получит GPT-ответ, пока не оплатит)
+    }
+  }
+}
+
 
     // ✅ BASIC 95/100
     if (gate?.extra === "warn95" && gate?.notify) {
