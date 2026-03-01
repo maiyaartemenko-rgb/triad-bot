@@ -1,4 +1,5 @@
 // src/sendpulse/sendpulse-webhook.js
+
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
 
@@ -20,16 +21,25 @@ import {
 } from "../access/access-store.js";
 
 // ==================== CONFIG ====================
+
 const PAYWALL_BY_SENDPULSE = true;
+
+// первая воронка оплаты (после 2 бесплатных ответов)
 const SP_PAY_16_STARS_FLOW_ID = String(process.env.SP_PAY_16_STARS_FLOW_ID || "").trim();
 
-// ✅ имя переменной, которую ставит SendPulse после оплаты
-const SP_PAID_FLAG_VAR = "PAID_16_STARS_12_STEPS";
+// повторная воронка (после завершения цикла)
+const SP_PAY_16_STARS_REPEAT_FLOW_ID = String(process.env.SP_PAY_16_STARS_REPEAT_FLOW_ID || "").trim();
 
-// micro config (должно совпадать по смыслу с access-store)
+// переменная SendPulse, которую выставляет воронка после оплаты (значение 1)
+const SP_PAID_FLAG_VAR = String(process.env.SP_MICRO_PAID_VAR || "PAID_16_STARS_12_STEPS").trim();
+
+// переменная SendPulse, куда сервер пишет количество циклов (для ветвления repeat-воронки)
+const SP_MICRO_CYCLE_COUNT_VAR = String(process.env.SP_MICRO_CYCLE_COUNT_VAR || "MICRO_CYCLE_COUNT").trim();
+
+// micro config
 const MICRO_WINDOW_HOURS = 24;
-const MICRO_STEPS = 12; // 12 ответов
-const MICRO_TOTAL_ANSWERS = 13; // 12 + финальный
+const MICRO_STEPS = 12;
+const MICRO_TOTAL_ANSWERS = 13;
 
 // ==================== helpers ====================
 
@@ -39,6 +49,12 @@ function getEvent(payload) {
 
 function safeStr(x) {
   return String(x ?? "").trim();
+}
+
+function addDaysISO(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days || 0));
+  return d.toISOString();
 }
 
 function addHoursISO(hours) {
@@ -121,7 +137,16 @@ function isPaidActive(rec) {
 function isMicroActive(rec) {
   if (!rec?.micro_active_until) return false;
   const t = new Date(rec.micro_active_until).getTime();
-  return Number.isFinite(t) && Date.now() < t && (rec.micro_stage === "active" || rec.micro_stage === "await_final");
+  return (
+    Number.isFinite(t) &&
+    Date.now() < t &&
+    (rec.micro_stage === "active" || rec.micro_stage === "await_final")
+  );
+}
+
+function isTruthyFlagValue(v) {
+  const s = safeStr(v).toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "y";
 }
 
 // ==================== TEXTS ====================
@@ -137,7 +162,7 @@ const MICRO_FINAL_QUESTION_TEXT = [
   "что стало самым важным для тебя сегодня? ✨",
 ].join("\n");
 
-// BASIC 95/100 и upsell Tribute (оставляем как было)
+// BASIC 95/100 и апселл Tribute (оставляем)
 const BASIC_95_WARN_TEXT = [
   "Мы подходим к завершению этого разговора 🔚",
   "",
@@ -173,7 +198,8 @@ const UNLIMITED_HARD_UPSELL_TEXT = [
   "Открывай безлимит и добивай до результата. 💥",
 ].join("\n");
 
-// ==================== Tribute links (как было) ====================
+// ==================== Tribute links ====================
+
 function getPublicBaseUrl(req) {
   const envBase = safeStr(process.env.PUBLIC_BASE_URL);
   if (envBase) return envBase.replace(/\/$/, "");
@@ -202,19 +228,19 @@ async function sendUnlimitedUpsellWithLink(req, contactId, prefixText = "") {
     });
     return;
   }
+
   const out = `${prefixText}\n\n👉 <a href="${unlimited}">Открыть безлимит — 2990 ₽</a>`;
   await sendpulseTelegramSendText({ contactId, text: out });
 }
 
-// ==================== STARS FLOW TRIGGER ====================
-async function triggerStarsFlowIfConfigured(contactId) {
-  if (!PAYWALL_BY_SENDPULSE) return { ok: false, reason: "disabled" };
-  if (!SP_PAY_16_STARS_FLOW_ID) {
-    console.error("SP_PAY_16_STARS_FLOW_ID is empty. Flow won't start.");
-    return { ok: false, reason: "no_flow_id" };
-  }
+// ==================== FLOW START HELPERS ====================
+
+async function startFlowSafe({ flowId, contactId }) {
+  const fid = String(flowId || "").trim();
+  if (!fid) return { ok: false, reason: "no_flow_id" };
+
   try {
-    await sendpulseStartFlow({ flowId: SP_PAY_16_STARS_FLOW_ID, contactId });
+    await sendpulseStartFlow({ flowId: fid, contactId });
     return { ok: true };
   } catch (e) {
     console.error("sendpulseStartFlow error:", e);
@@ -222,15 +248,28 @@ async function triggerStarsFlowIfConfigured(contactId) {
   }
 }
 
+async function startPayFlow(contactId) {
+  if (!PAYWALL_BY_SENDPULSE) return { ok: false, reason: "disabled" };
+  return startFlowSafe({ flowId: SP_PAY_16_STARS_FLOW_ID, contactId });
+}
+
+async function startRepeatPayFlow(contactId) {
+  if (!PAYWALL_BY_SENDPULSE) return { ok: false, reason: "disabled" };
+  // repeat обязателен, но если не задан — fallback на основной
+  const fid = SP_PAY_16_STARS_REPEAT_FLOW_ID || SP_PAY_16_STARS_FLOW_ID;
+  return startFlowSafe({ flowId: fid, contactId });
+}
+
 // ==================== MICRO: activate if paid flag is set ====================
+
 async function tryActivateMicroFromSendPulseFlag({ contactId, vars }) {
-  const flagVal = safeStr(vars?.[SP_PAID_FLAG_VAR] ?? "");
-  const isPaidFlag = flagVal === "1" || flagVal.toLowerCase() === "true" || flagVal.toLowerCase() === "yes";
-  if (!isPaidFlag) return { ok: false, reason: "no_flag" };
+  const paidFlag = isTruthyFlagValue(vars?.[SP_PAID_FLAG_VAR]);
+  if (!paidFlag) return { ok: false, reason: "no_flag" };
 
   const rec = getAccess(contactId) || {};
+
+  // уже активен — просто сбросим флаг
   if (isMicroActive(rec)) {
-    // уже активен — просто сбросим флаг на всякий
     try {
       await sendpulseSetContactVariables({ contactId, variables: { [SP_PAID_FLAG_VAR]: "0" } });
     } catch {}
@@ -238,27 +277,72 @@ async function tryActivateMicroFromSendPulseFlag({ contactId, vars }) {
   }
 
   const cycleCount = Number.isFinite(rec.micro_cycle_count) ? rec.micro_cycle_count : 0;
+  const nextCycle = cycleCount + 1;
 
-  // ✅ активируем 24 часа и обнуляем счётчик микро-ответов
   setAccess(contactId, {
-    micro_cycle_count: cycleCount + 1,
+    micro_cycle_count: nextCycle,
     micro_active_until: addHoursISO(MICRO_WINDOW_HOURS),
     micro_started_at: new Date().toISOString(),
     micro_stage: "active",
     micro_used_answers: 0,
 
-    // выходим из paywall, чтобы GPT отвечал
     paywall_shown: false,
     paywall_hold_notified: false,
   });
 
-  // ✅ очень важно: сбросить флаг оплаты в SendPulse
-  await sendpulseSetContactVariables({ contactId, variables: { [SP_PAID_FLAG_VAR]: "0" } });
+  // ✅ пишем счётчик циклов в SendPulse (для ветвления repeat-воронки)
+  try {
+    await sendpulseSetContactVariables({
+      contactId,
+      variables: {
+        [SP_MICRO_CYCLE_COUNT_VAR]: String(nextCycle),
+        [SP_PAID_FLAG_VAR]: "0",
+      },
+    });
+  } catch (e) {
+    // даже если не записалось — micro всё равно активен на сервере
+    console.error("sendpulseSetContactVariables cycle_count error:", e);
+    try {
+      await sendpulseSetContactVariables({ contactId, variables: { [SP_PAID_FLAG_VAR]: "0" } });
+    } catch {}
+  }
 
-  return { ok: true, activated: true };
+  return { ok: true, activated: true, cycle: nextCycle };
+}
+
+// ==================== ADMIN ====================
+
+async function grantPlanToContact({ contactId, plan, days = 30 }) {
+  const paid_until = addDaysISO(days);
+
+  setAccess(contactId, {
+    plan,
+    paid_until,
+    last_reset_date: todayStr(),
+    daily_used: 0,
+
+    paywall_shown: false,
+    paywall_hold_notified: false,
+    bot_answers_count: 0,
+
+    dialog_used: 0,
+    dialog_warn95_sent: false,
+    dialog_end100_sent: false,
+
+    unlimited_upsell_shown: false,
+    unlimited_nudge_due_at: null,
+    unlimited_nudge_sent: false,
+  });
+
+  try {
+    clearHistory(contactId);
+  } catch {}
+
+  return { ok: true, plan, paid_until };
 }
 
 // ==================== main ====================
+
 export async function handleSendpulseWebhook(req, res) {
   res.status(200).json({ ok: true });
 
@@ -272,25 +356,28 @@ export async function handleSendpulseWebhook(req, res) {
 
     const tgId = extractTelegramUserId(event);
     if (tgId) {
-      try { setTgMap(String(tgId), String(contactId)); } catch (e) { console.error("setTgMap error:", e); }
+      try {
+        setTgMap(String(tgId), String(contactId));
+      } catch (e) {
+        console.error("setTgMap error:", e);
+      }
     }
 
     const lower = text.toLowerCase();
 
-    // /start — ничего не пишем
+    // /start — молчим
     if (lower === "/start") return;
 
-    // vars from SendPulse contact
     const vars = event?.contact?.variables || {};
 
-    // ✅ 1) если пришла оплата-флажок — включаем micro-доступ и СРАЗУ сбрасываем переменную
+    // 1) если был флаг оплаты — активируем micro
     try {
       await tryActivateMicroFromSendPulseFlag({ contactId, vars });
     } catch (e) {
       console.error("tryActivateMicroFromSendPulseFlag error:", e);
     }
 
-    // ---------- ADMIN ----------
+    // ADMIN
     if (lower === "/whoami") {
       const myTgId = extractTelegramUserId(event);
       await sendpulseTelegramSendText({
@@ -300,52 +387,97 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    if (lower === "/reset") {
+    if (lower.startsWith("/grant_basic")) {
       if (!isAdmin(event)) return;
-      try { clearHistory(contactId); } catch {}
-      try { deleteAccess(contactId); } catch (e) { console.error("deleteAccess error:", e); }
-      await sendpulseTelegramSendText({ contactId, text: "✅ Полный сброс сделан. Теперь ты как новый пользователь." });
+      const parts = text.trim().split(/\s+/);
+      const targetTgId = parts[1] ? String(parts[1]).trim() : "";
+      const days = parts[2] ? Number(parts[2]) : 30;
+      if (!targetTgId) return;
+
+      const targetContactId = String(getContactIdByTgId(String(targetTgId)) || "").trim();
+      if (!targetContactId) return;
+
+      const r = await grantPlanToContact({ contactId: targetContactId, plan: "basic", days });
+      await sendpulseTelegramSendText({
+        contactId,
+        text: `✅ Выдан BASIC\ncontactId=${targetContactId}\npaid_until=${fmtIsoRu(r.paid_until)}`,
+      });
       return;
     }
 
-    // ---------- PAYWALL SILENCE ----------
+    if (lower.startsWith("/grant_unlimited")) {
+      if (!isAdmin(event)) return;
+      const parts = text.trim().split(/\s+/);
+      const targetTgId = parts[1] ? String(parts[1]).trim() : "";
+      const days = parts[2] ? Number(parts[2]) : 30;
+      if (!targetTgId) return;
+
+      const targetContactId = String(getContactIdByTgId(String(targetTgId)) || "").trim();
+      if (!targetContactId) return;
+
+      const r = await grantPlanToContact({ contactId: targetContactId, plan: "unlimited", days });
+      await sendpulseTelegramSendText({
+        contactId,
+        text: `✅ Выдан UNLIMITED\ncontactId=${targetContactId}\npaid_until=${fmtIsoRu(r.paid_until)}`,
+      });
+      return;
+    }
+
+    if (lower === "/reset") {
+      if (!isAdmin(event)) return;
+      try {
+        clearHistory(contactId);
+      } catch {}
+      try {
+        deleteAccess(contactId);
+      } catch (e) {
+        console.error("deleteAccess error:", e);
+      }
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "✅ Полный сброс сделан. Теперь ты как новый пользователь.",
+      });
+      return;
+    }
+
+    // PAYWALL SILENCE
     const rec0 = getAccess(contactId) || {};
     const paidActive0 = isPaidActive(rec0);
     const microActive0 = isMicroActive(rec0);
 
-    // если micro активен — НЕ молчим
-    if (PAYWALL_BY_SENDPULSE && !paidActive0 && !microActive0 && rec0.paywall_shown) return;
+    if (PAYWALL_BY_SENDPULSE && !paidActive0 && !microActive0 && rec0.paywall_shown) {
+      return;
+    }
 
-    // ---------- LIMITS BEFORE GPT ----------
+    // LIMITS BEFORE GPT
     const gate = checkAndConsumeQuota(contactId);
 
     if (!gate.ok) {
-      // если нет доступа и нет micro/платных — стартуем flow оплаты
       const recX = getAccess(contactId) || {};
       const paidX = isPaidActive(recX);
       const microX = isMicroActive(recX);
 
       if (PAYWALL_BY_SENDPULSE && !paidX && !microX && !recX.paywall_shown) {
         setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
-        await triggerStarsFlowIfConfigured(contactId);
+        await startPayFlow(contactId);
       }
       return;
     }
 
-    // ---------- memory ----------
+    // memory
     pushToHistory(contactId, "user", text);
     const history = getHistory(contactId, 10);
 
-    // ---------- profile ----------
+    // profile
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
     const profile = { main_sign: main_sign || "БАРСУК", active_signs };
 
-    // ---------- partner ----------
+    // partner
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
 
-    // ---------- GPT ----------
+    // GPT
     let result;
     try {
       result = await triadChat({
@@ -358,65 +490,60 @@ export async function handleSendpulseWebhook(req, res) {
       });
     } catch (e) {
       console.error("TRIAD_CHAT_ERROR:", e);
-      await sendpulseTelegramSendText({ contactId, text: "Сейчас технический сбой. Попробуй ещё раз через минуту 🙏" });
+      await sendpulseTelegramSendText({
+        contactId,
+        text: "Сейчас технический сбой. Попробуй ещё раз через минуту 🙏",
+      });
       return;
     }
 
     const answer = safeStr(result?.answer) || "Ок. Сформулируй вопрос чуть конкретнее 🙂";
     await sendpulseTelegramSendText({ contactId, text: decodeHtmlEntities(answer) });
     pushToHistory(contactId, "assistant", answer);
-    // ---------- after-send: count bot answers & trigger paywall after 2 ----------
-{
-  const rec = getAccess(contactId) || {};
-  const paid = isPaidActive(rec);
-  const micro = isMicroActive(rec);
 
-  // считаем ответы только если нет платного плана и не активен micro-цикл
-  if (!paid && !micro) {
-    const prev = Number.isFinite(rec.bot_answers_count) ? rec.bot_answers_count : 0;
-    const next = prev + 1;
-
-    setAccess(contactId, { bot_answers_count: next });
-
-    // ✅ после 2-го ответа — запускаем flow и включаем режим paywall
-    if (next >= 2 && !rec.paywall_shown) {
-      setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
-
-      // запускаем SendPulse-воронку с оплатой (в ней твой текст + кнопка)
-      await triggerStarsFlowIfConfigured(contactId);
-
-      // дальше: сервер уже будет молчать, потому что paywall_shown=true
-      // (следующее сообщение пользователя не получит GPT-ответ, пока не оплатит)
-    }
-  }
-}
-
-
-    // ✅ BASIC 95/100
+    // BASIC 95/100
     if (gate?.extra === "warn95" && gate?.notify) {
       await sendpulseTelegramSendText({ contactId, text: BASIC_95_WARN_TEXT });
     }
+
     if (gate?.extra === "end100" && gate?.notify) {
       await sendpulseTelegramSendText({ contactId, text: BASIC_100_END_TEXT });
       await sendUnlimitedUpsellWithLink(req, contactId, UNLIMITED_HARD_UPSELL_TEXT);
-      try { markUnlimitedUpsellShown(contactId); } catch {}
+      try {
+        markUnlimitedUpsellShown(contactId);
+      } catch {}
     }
 
-    // ---------- MICRO финализация ----------
+    // after-send: paywall after 2 (только если не платно и не micro)
+    {
+      const rec = getAccess(contactId) || {};
+      const paid = isPaidActive(rec);
+      const micro = isMicroActive(rec);
+
+      if (!paid && !micro) {
+        const prev = Number.isFinite(rec.bot_answers_count) ? rec.bot_answers_count : 0;
+        const next = prev + 1;
+        setAccess(contactId, { bot_answers_count: next });
+
+        if (next >= 2 && !rec.paywall_shown) {
+          setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
+          await startPayFlow(contactId);
+        }
+      }
+    }
+
+    // MICRO финализация
     const recAfter = getAccess(contactId) || {};
     if (gate.plan === "micro" && isMicroActive(recAfter)) {
       const used = Number.isFinite(recAfter.micro_used_answers) ? recAfter.micro_used_answers : 0;
 
-      // used считается в access-store: уже +1 на этот ответ
       if (used === MICRO_STEPS && recAfter.micro_stage === "active") {
-        // после 12-го ответа — отправляем финальный вопрос и ждём ответ пользователя
         setAccess(contactId, { micro_stage: "await_final" });
         await sendpulseTelegramSendText({ contactId, text: MICRO_FINAL_QUESTION_TEXT });
         return;
       }
 
       if (used >= MICRO_TOTAL_ANSWERS && recAfter.micro_stage === "await_final") {
-        // выдали финальный ответ (13-й) — закрываем цикл и сразу запускаем оплату следующего
         setAccess(contactId, {
           micro_stage: "idle",
           micro_active_until: null,
@@ -425,11 +552,13 @@ export async function handleSendpulseWebhook(req, res) {
           paywall_hold_notified: false,
         });
 
-        await triggerStarsFlowIfConfigured(contactId);
+        // ✅ запускаем repeat-воронку
+        // ВАЖНО: она сама решит, показывать ли BASIC/UNLIMITED,
+        // по переменной MICRO_CYCLE_COUNT, которую мы записываем при оплате.
+        await startRepeatPayFlow(contactId);
         return;
       }
     }
-
   } catch (err) {
     console.error("SENDPULSE_WEBHOOK_ERROR:", err);
   }
