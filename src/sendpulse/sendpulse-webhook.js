@@ -1,4 +1,4 @@
-// src/sendpulse/sendpulse-webhook.js
+ // src/sendpulse/sendpulse-webhook.js
 
 import { triadChat } from "../triad/triad-openai.js";
 import { parsePartnerFromTextV4 } from "../parsing/parsePartnerFromText.v4.js";
@@ -34,16 +34,34 @@ const SP_PAY_16_STARS_REPEAT_FLOW_ID = String(process.env.SP_PAY_16_STARS_REPEAT
 const SP_PAID_FLAG_VAR = String(process.env.SP_MICRO_PAID_VAR || "PAID_16_STARS_12_STEPS").trim();
 
 // переменная SendPulse, куда сервер пишет количество циклов (для ветвления repeat-воронки)
-const SP_MICRO_CYCLE_COUNT_VAR = String(process.env.SP_MICRO_CYCLE_COUNT_VAR || "MICRO_CYCLE_COUNT").trim();
+const SP_MICRO_CYCLE_COUNT_VAR = String(
+  process.env.SP_MICRO_CYCLE_COUNT_VAR || "micro_cycle_count"
+).trim();
 
 // micro config (согласовано по смыслу с access-store)
 const MICRO_STEPS = 12;
 const MICRO_TOTAL_ANSWERS = 13;
 
+// команды меню, на которые бот НЕ должен отвечать и НЕ должен тратить лимит
+const IGNORED_MENU_COMMANDS = new Set([
+  "/start",
+  "/redkost",
+  "/moyznak",
+  "/opisanie",
+  "/channel",
+  "/basic",
+  "/unlimited",
+  "/vseznaki",
+  "/help",
+  "/dengi",
+  "/sila",
+  "/sovmestimost",
+]);
+
 // ==================== HELPERS ====================
 
 function getEvent(payload) {
-  return Array.isArray(payload) ? (payload[0] ?? {}) : (payload ?? {});
+  return Array.isArray(payload) ? payload[0] ?? {} : payload ?? {};
 }
 
 function safeStr(x) {
@@ -271,7 +289,7 @@ async function tryActivateMicroFromSendPulseFlag({ contactId, vars }) {
   const cycleCount = Number.isFinite(rec.micro_cycle_count) ? rec.micro_cycle_count : 0;
   const nextCycle = cycleCount + 1;
 
-  // Активируем micro в access-store (24 часа)
+  // Активируем micro
   setAccess(contactId, {
     micro_cycle_count: nextCycle,
     micro_active_until: new Date(Date.now() + 24 * 3600000).toISOString(),
@@ -282,6 +300,7 @@ async function tryActivateMicroFromSendPulseFlag({ contactId, vars }) {
     // снимаем paywall
     paywall_shown: false,
     paywall_hold_notified: false,
+    paywall_day: null,
   });
 
   // пишем счётчик циклов в SendPulse и сбрасываем флаг оплаты
@@ -316,17 +335,11 @@ async function grantPlanToContact({ contactId, plan, days = 30 }) {
 
     paywall_shown: false,
     paywall_hold_notified: false,
+    paywall_day: null,
 
-    // BASIC counters reset
     dialog_used: 0,
     dialog_warn95_sent: false,
     dialog_end100_sent: false,
-
-    // micro не трогаем принудительно, но можно обнулить при желании:
-    // micro_active_until: null,
-    // micro_started_at: null,
-    // micro_stage: "idle",
-    // micro_used_answers: 0,
   });
 
   try {
@@ -339,7 +352,6 @@ async function grantPlanToContact({ contactId, plan, days = 30 }) {
 // ==================== MAIN ====================
 
 export async function handleSendpulseWebhook(req, res) {
-  // SendPulse ждёт быстрый 200
   res.status(200).json({ ok: true });
 
   try {
@@ -362,9 +374,6 @@ export async function handleSendpulseWebhook(req, res) {
 
     const lower = text.toLowerCase();
 
-    // /start — молчим (как ты просила)
-    if (lower === "/start") return;
-
     // vars from SendPulse contact
     const vars = event?.contact?.variables || {};
 
@@ -373,6 +382,11 @@ export async function handleSendpulseWebhook(req, res) {
       await tryActivateMicroFromSendPulseFlag({ contactId, vars });
     } catch (e) {
       console.error("tryActivateMicroFromSendPulseFlag error:", e);
+    }
+
+    // 2) игнорируем команды меню полностью
+    if (IGNORED_MENU_COMMANDS.has(lower)) {
+      return;
     }
 
     // ---------- ADMIN ----------
@@ -477,40 +491,37 @@ export async function handleSendpulseWebhook(req, res) {
       return;
     }
 
-    // ---------- PAYWALL SILENCE ----------
-    const rec0 = getAccess(contactId) || {};
-    const paidActive0 = isPaidActive(rec0);
-    const microActive0 = isMicroActive(rec0);
-
-    // если paywall_shown и нет оплаты/микро — сервер молчит
-    if (PAYWALL_BY_SENDPULSE && !paidActive0 && !microActive0 && rec0.paywall_shown) return;
-
     // ---------- LIMITS BEFORE GPT ----------
+    // ВАЖНО: checkAndConsumeQuota вызывается ВСЕГДА.
+    // Никакого раннего return по paywall_shown до него.
     const gate = checkAndConsumeQuota(contactId);
 
     if (!gate.ok) {
-      // если доступа нет — запускаем оплатную воронку (один раз, дальше молчим)
       const recX = getAccess(contactId) || {};
       const paidX = isPaidActive(recX);
       const microX = isMicroActive(recX);
 
+      // если доступа нет — запускаем оплатную воронку (один раз за день/состояние)
       if (PAYWALL_BY_SENDPULSE && !paidX && !microX && !recX.paywall_shown) {
-        setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
+        setAccess(contactId, {
+          paywall_shown: true,
+          paywall_hold_notified: false,
+        });
         await startPayFlow(contactId);
       }
       return;
     }
 
-    // ---------- memory ----------
+    // ---------- MEMORY ----------
     pushToHistory(contactId, "user", text);
     const history = getHistory(contactId, 10);
 
-    // ---------- profile ----------
+    // ---------- PROFILE ----------
     const main_sign = normalizeMainSignFromVars(vars) || null;
     const active_signs = parseActiveSigns(vars);
     const profile = { main_sign: main_sign || "БАРСУК", active_signs };
 
-    // ---------- partner ----------
+    // ---------- PARTNER ----------
     const parsed = parsePartnerFromTextV4(text);
     const partnerSign = parsed?.partnerSign || null;
 
@@ -538,7 +549,7 @@ export async function handleSendpulseWebhook(req, res) {
     await sendpulseTelegramSendText({ contactId, text: decodeHtmlEntities(answer) });
     pushToHistory(contactId, "assistant", answer);
 
-    // ✅ BASIC 95/100 (возвращено)
+    // ✅ BASIC 95/100
     if (gate?.extra === "warn95" && gate?.notify) {
       await sendpulseTelegramSendText({ contactId, text: BASIC_95_WARN_TEXT });
     }
@@ -553,15 +564,16 @@ export async function handleSendpulseWebhook(req, res) {
 
     // ✅ MICRO сервисные сообщения
     if (gate.plan === "micro") {
-      // после 12-го ответа — просим подытожить (перед финальным)
       if (gate.extra === "micro_pre_final" && gate.notify) {
         await sendpulseTelegramSendText({ contactId, text: MICRO_FINAL_QUESTION_TEXT });
         return;
       }
 
-      // после 13-го — закрываем и запускаем repeat-воронку
       if (gate.extra === "micro_end" && gate.notify) {
-        setAccess(contactId, { paywall_shown: true, paywall_hold_notified: false });
+        setAccess(contactId, {
+          paywall_shown: true,
+          paywall_hold_notified: false,
+        });
         await startRepeatPayFlow(contactId);
         return;
       }
