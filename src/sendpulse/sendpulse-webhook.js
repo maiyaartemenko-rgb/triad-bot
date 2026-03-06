@@ -55,6 +55,7 @@ const IGNORED_MENU_COMMANDS = new Set([
   "/help",
   "/dengi",
   "/sila",
+   "/otzivi",
   "/sovmestimost",
 ]);
 
